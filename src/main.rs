@@ -1,37 +1,12 @@
 use futures::stream::{self, StreamExt};
+use nya::{download, parser, signature};
 use reqwest::Client;
-use std::env;
-use std::path::Path;
-use std::sync::LazyLock;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufWriter;
 use tokio::task;
 
-mod parser;
-mod signature;
-
 const REPOSITORIES_FILEPATH: &str = "sources";
-const DEFAULT_CACHE_DIR: &str = "/etc/nya/";
-static DOWNLOAD_PATH: LazyLock<String> = LazyLock::new(configure_download_path);
-
-fn try_read_env_var(name: &str, default: &str) -> String {
-    env::var(name).unwrap_or_else(|_| String::from(default.trim()))
-}
 
 fn generate_download_filename(prefix: &str, suffix: &str) -> String {
     format!("{}_{}", prefix, suffix)
-}
-
-fn configure_download_path() -> String {
-    let cache_env = try_read_env_var("CACHE_DIR", DEFAULT_CACHE_DIR);
-
-    let base_dir = Path::new(&cache_env);
-
-    if !base_dir.exists() {
-        std::fs::create_dir_all(&base_dir).expect("No se pudo crear el directorio de cache");
-    }
-    cache_env
 }
 
 #[tokio::main]
@@ -46,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &repository.download_basename("_").unwrap(),
                         "InRelease",
                     );
-                    let result = download_file(
+                    let result = download::download_file(
                         &repository.inrelease_url().unwrap(),
                         &filename,
                         client_clone,
@@ -91,23 +66,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-async fn download_file(
-    url: &str,
-    filename: &str,
-    client: Client,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let mut stream = client.get(url).send().await?.bytes_stream();
-
-    let filepath = format!("{}/{}", &*DOWNLOAD_PATH, filename);
-    let mut file = File::create(&filepath).await?;
-
-    let mut writer = BufWriter::new(&mut file);
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        writer.write_all(&bytes).await?;
-    }
-    writer.flush().await?;
-    Ok(filepath)
 }
