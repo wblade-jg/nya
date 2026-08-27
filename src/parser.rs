@@ -28,6 +28,10 @@ impl Repository {
             signed_by: None,
         }
     }
+    
+    pub fn signed_by(&self) -> Option<String> {
+        self.signed_by.clone()
+    }
 
     pub fn inrelease_url(&self) -> Option<String> {
         let base_url = self.uris.first()?;
