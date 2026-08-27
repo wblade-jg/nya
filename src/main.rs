@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use std::env;
 use std::path::Path;
@@ -6,8 +6,10 @@ use std::sync::LazyLock;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
+use tokio::task;
 
 mod parser;
+mod signature;
 
 const REPOSITORIES_FILEPATH: &str = "sources";
 const DEFAULT_CACHE_DIR: &str = "/etc/nya/";
@@ -37,23 +39,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match parser::read_repositories_from_file(REPOSITORIES_FILEPATH).await {
         Ok(repositories) => {
             let client = Client::new();
-            futures_util::stream::iter(repositories.into_iter().map(|repository| {
+            let pipeline = stream::iter(repositories.into_iter().map(|repository| {
                 let client_clone = client.clone();
-                let url = repository.inrelease_url().unwrap();
-                let filename = generate_download_filename(
-                    &repository.download_basename("_").unwrap(),
-                    "InRelease",
-                );
                 async move {
-                    if let Err(e) = download_file(&url, &filename, client_clone).await {
-                        eprintln!("Error downloading {}: {}", url, e);
+                    let filename = generate_download_filename(
+                        &repository.download_basename("_").unwrap(),
+                        "InRelease",
+                    );
+                    let result = download_file(
+                        &repository.inrelease_url().unwrap(),
+                        &filename,
+                        client_clone,
+                    )
+                    .await;
+
+                    match result {
+                        Ok(downloaded_filename) => {
+                            let signature_filename = repository.signed_by().unwrap();
+                            println!("Descargado: {}", downloaded_filename);
+                            Some((downloaded_filename, signature_filename))
+                        }
+                        Err(e) => {
+                            eprintln!("Error en la descarga: {}", e);
+                            None
+                        }
                     }
-                    println!("Downloaded {}", url);
                 }
             }))
             .buffer_unordered(10)
-            .collect::<Vec<()>>()
-            .await;
+            .filter_map(|result| async move { result })
+            .map(|(downloaded_filename, signature_filename)| async move {
+                task::spawn_blocking(move || {
+                    let result = signature::validate_signature_file(
+                        &downloaded_filename,
+                        &signature_filename,
+                    );
+                    match result {
+                        Ok(message) => println!("{}", message),
+                        Err(e) => eprintln!("Error verificando la firma: {}", e),
+                    }
+                })
+                .await
+            })
+            .buffer_unordered(10);
+
+            pipeline.collect::<Vec<_>>().await;
         }
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -67,17 +97,17 @@ async fn download_file(
     url: &str,
     filename: &str,
     client: Client,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut stream = client.get(url).send().await?.bytes_stream();
 
-    let filename = Path::new(&*DOWNLOAD_PATH).join(filename);
-    let file = File::create(filename).await?;
+    let filepath = format!("{}/{}", &*DOWNLOAD_PATH, filename);
+    let mut file = File::create(&filepath).await?;
 
-    let mut writer = BufWriter::new(file);
+    let mut writer = BufWriter::new(&mut file);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
         writer.write_all(&bytes).await?;
     }
     writer.flush().await?;
-    Ok(())
+    Ok(filepath)
 }

@@ -1,0 +1,17 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: Nya Test
+Label: Nya
+Suite: stable
+Codename: noble
+Architectures: amd64
+Components: main
+Date: Thu, 01 Jan 2026 00:00:00 UTC
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQTgCMjUIoKfoKP6xxVICFDxs+D1JQUCapCpnQAKCRBICFDxs+D1
+JXiFAQDCRHq+KZ9N+aQIz3oubARCjP9GTdTwixLDZXBRxgZcMAD9EqNPMYO2Q4Uq
+9tYykXcXCq6jHrCy9TBs/cjyoy/VLgM=
+=6Aka
+-----END PGP SIGNATURE-----
