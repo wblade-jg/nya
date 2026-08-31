@@ -16,7 +16,7 @@ pub struct Repository {
     uris: Vec<String>,
     suites: Vec<String>,
     components: Vec<String>,
-    signed_by: Option<String>,
+    signed_by: String,
 }
 
 impl Repository {
@@ -25,34 +25,58 @@ impl Repository {
             uris: Vec::new(),
             suites: Vec::new(),
             components: Vec::new(),
-            signed_by: None,
+            signed_by: String::default(),
         }
     }
-    
-    pub fn signed_by(&self) -> Option<String> {
+
+    pub fn component(&self) -> String {
+        self.components
+            .first()
+            .expect("Se espera al menos un componente")
+            .clone()
+    }
+
+    pub fn signed_by(&self) -> String {
         self.signed_by.clone()
     }
 
-    pub fn inrelease_url(&self) -> Option<String> {
-        let base_url = self.uris.first()?;
-        let suite = self.suites.first()?;
-        Some(format!("{}/dists/{}/InRelease", base_url, suite))
+    fn urls(&self) -> impl Iterator<Item = &String> {
+        self.uris.iter()
     }
 
-    pub fn download_basename(&self, delimiter: &str) -> Option<String> {
-        let uri = self.inrelease_url().unwrap();
-        let suite = self.suites.first()?;
-        let component = self.components.first()?;
-        
-        let url_parsed = Url::parse(&uri).ok()?;
-        let domain = url_parsed.host_str()?;
-        
-        Some(format!("{}{}{}{}{}", domain, delimiter, suite, delimiter, component))
+    pub fn suite(&self) -> String {
+        self.suites
+            .first()
+            .expect("Se espera al menos una suite")
+            .clone()
+    }
+
+    pub fn inrelease_path(&self) -> String {
+        let base_url = self.urls().next().unwrap().clone();
+        let suite = self.suite();
+        format!("{}/dists/{}/InRelease", base_url, suite)
+    }
+
+    pub fn packages_path(&self, architecture: &str) -> String {
+        format!(
+            "{}/binary-{}/Packages",
+            self.component(),
+            architecture
+        )
     }
 
     fn is_valid(&self) -> bool {
         !self.uris.is_empty() && !self.suites.is_empty() && !self.components.is_empty()
     }
+}
+
+pub fn format_url(separator: &str, uri: &str) -> Option<String> {
+    let url_parsed = Url::parse(&uri).ok()?;
+    let domain = url_parsed.host_str()?;
+    
+    let formatted_url = format!("{}{}", domain, url_parsed.path().replace("/", separator));
+    
+    Some(formatted_url)
 }
 
 fn skip_comment(input: &str) -> IResult<&str, ()> {
@@ -118,7 +142,7 @@ fn parse_block(input: &str) -> IResult<&str, Repository> {
                     .extend(value.split_whitespace().map(String::from));
             }
             "Signed-By" => {
-                repo.signed_by = Some(value);
+                repo.signed_by = value;
             }
             _ => (), // Ignore unknown keys
         }
