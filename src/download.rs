@@ -1,13 +1,12 @@
 use std::env;
 use std::path::Path;
 use std::sync::LazyLock;
-
 use futures::stream::StreamExt;
 use reqwest::Client;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
-pub const DEFAULT_CACHE_DIR: &str = "/etc/nya/";
+pub const DEFAULT_CACHE_DIR: &str = "/etc/nya";
 
 static DOWNLOAD_PATH: LazyLock<String> = LazyLock::new(configure_download_path);
 

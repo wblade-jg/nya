@@ -6,7 +6,7 @@ use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
 pub fn verify_inrelease_signature(
     msg: &CleartextSignedMessage,
     key: &SignedPublicKey,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if msg.verify(key).is_ok() {
         return Ok(());
     }
@@ -26,7 +26,7 @@ pub fn verify_inrelease_signature(
 pub fn validate_signature_file(
     signed_path: &str,
     key_path: &str,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String, Box<dyn Error + Send + Sync>> {
     let key_file = File::open(key_path)?;
     let (public_key, _) = SignedPublicKey::from_reader_single(key_file)?;
 
