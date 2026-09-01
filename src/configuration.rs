@@ -1,11 +1,21 @@
-use std::sync::LazyLock;
 use std::{env, path::Path};
 
-pub static REPOSITORIES_FILEPATH: LazyLock<String> = LazyLock::new(configure_repositories_file);
-pub static DOWNLOAD_PATH: LazyLock<String> = LazyLock::new(configure_download_path);
-pub static ARCHITECTURE: LazyLock<&'static str> = LazyLock::new(architecture);
 const DEFAULT_CACHE_DIR: &str = "/etc/nya";
 const DEFAULT_REPOSITORIES_FILE: &str = "sources";
+
+pub struct Configuration {
+    pub repositories_filepath: String,
+    pub download_path: String,
+}
+
+impl Configuration {
+    pub fn from_env() -> Self {
+        Configuration {
+            repositories_filepath: configure_repositories_file(),
+            download_path: configure_download_path(),
+        }
+    }
+}
 
 fn try_read_env_var(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| String::from(default.trim()))
@@ -33,7 +43,7 @@ fn configure_repositories_file() -> String {
     repositories_file
 }
 
-fn architecture() -> &'static str {
+pub fn architecture() -> &'static str {
     match std::env::consts::ARCH {
         "x86_64" => "amd64",
         "aarch64" => "arm64",

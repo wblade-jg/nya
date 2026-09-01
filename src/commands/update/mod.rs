@@ -1,18 +1,18 @@
-use futures::stream::{self, StreamExt};
-use tokio::task;
-use crate::{download, package_info, parser, signature, url};
-use reqwest::Client;
+use crate::configuration::Configuration ;
 use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
-use crate::configuration::{REPOSITORIES_FILEPATH, ARCHITECTURE};
+use crate::{download, package_info, parser, signature, url};
+use futures::stream::{self, StreamExt};
+use reqwest::Client;
+use tokio::task;
 
-async fn execute_pipeline(repositories: Vec<Repository>) {
+async fn execute_pipeline(repositories: Vec<Repository>, config: &Configuration) {
     let client = Client::new();
 
     let pipeline =
         stream::iter(
             repositories
                 .into_iter()
-                .map(|repository| download_inrelease(repository, client.clone())),
+                .map(|repository| download_inrelease(repository, client.clone(), config)),
         )
         .buffer_unordered(10)
         .filter_map(|result| async move { result.ok() })
@@ -25,10 +25,10 @@ async fn execute_pipeline(repositories: Vec<Repository>) {
     pipeline.collect::<Vec<_>>().await;
 }
 
-pub async fn update() {
-    match parser::read_repositories_from_file(&*REPOSITORIES_FILEPATH).await {
+pub async fn update(config: &Configuration) {
+    match parser::read_repositories_from_file(&config.repositories_filepath).await {
         Ok(repositories) => {
-            execute_pipeline(repositories).await;
+            execute_pipeline(repositories, config).await;
         }
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -39,6 +39,7 @@ pub async fn update() {
 async fn download_inrelease(
     repository: Repository,
     client: Client,
+    config: &Configuration
 ) -> Result<DownloadedInRelease, Box<dyn std::error::Error>> {
     let download_url = repository
         .inrelease_path()
@@ -46,31 +47,25 @@ async fn download_inrelease(
 
     let filename = url::format_url("_", &download_url)
         .ok_or("No se pudo formatear la URL del InRelease")?;
-    let inrelease_path = download::download_file(&download_url, &filename, client)
+    
+    let inrelease_path = download::download_file(&download_url, &filename, &config.download_path, client)
         .await
         .map_err(|e| {
             eprintln!("Error en la descarga: {}", e);
             e
         })?;
 
-    let signature_path = repository.signed_by();
-    let target_package_path = repository
-        .packages_path(&*ARCHITECTURE)
-        .ok_or("No se pudo construir la ruta del archivo de paquetes")?;
-
     println!("Descargado: {}", inrelease_path);
-    Ok(DownloadedInRelease::new(
-        inrelease_path,
-        signature_path,
-        target_package_path,
-    ))
+    DownloadedInRelease::from_repository(&repository, inrelease_path)
 }
 
 fn process_inrelease(
     downloaded: DownloadedInRelease,
 ) -> Result<PackageFileInfo, Box<dyn std::error::Error + Send + Sync>> {
-    let content =
-        signature::validate_signature_file(downloaded.inrelease_path(), downloaded.signature_path())?;
+    let content = signature::validate_signature_file(
+        downloaded.inrelease_path(),
+        downloaded.signature_path(),
+    )?;
 
     package_info::get_package_file_info(&content, downloaded.target_package_path())
 }

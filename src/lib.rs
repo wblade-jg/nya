@@ -1,5 +1,5 @@
 pub mod commands;
-pub(crate) mod configuration;
+pub mod configuration;
 pub(crate) mod download;
 pub(crate) mod package_info;
 pub(crate) mod parser;

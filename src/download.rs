@@ -2,16 +2,16 @@ use futures::stream::StreamExt;
 use reqwest::Client;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use crate::configuration::DOWNLOAD_PATH;
 
 pub async fn download_file(
     url: &str,
     filename: &str,
+    download_path: &str, 
     client: Client,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut stream = client.get(url).send().await?.bytes_stream();
 
-    let filepath = format!("{}/{}", &*DOWNLOAD_PATH, filename);
+    let filepath = format!("{}/{}", download_path, filename);
     let mut file = File::create(&filepath).await?;
 
     let mut writer = BufWriter::new(&mut file);
