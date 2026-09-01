@@ -2,8 +2,8 @@ use futures::stream::{self, StreamExt};
 use tokio::task;
 use crate::{download, package_info, parser, signature, url};
 use reqwest::Client;
-use crate::configuration::{REPOSITORIES_FILEPATH, ARCHITECTURE};
 use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
+use crate::configuration::{REPOSITORIES_FILEPATH, ARCHITECTURE};
 
 async fn execute_pipeline(repositories: Vec<Repository>) {
     let client = Client::new();
@@ -40,7 +40,9 @@ async fn download_inrelease(
     repository: Repository,
     client: Client,
 ) -> Result<DownloadedInRelease, Box<dyn std::error::Error>> {
-    let download_url = repository.inrelease_path();
+    let download_url = repository
+        .inrelease_path()
+        .ok_or("No se pudo construir la ruta del InRelease")?;
 
     let filename = url::format_url("_", &download_url)
         .ok_or("No se pudo formatear la URL del InRelease")?;
@@ -52,7 +54,9 @@ async fn download_inrelease(
         })?;
 
     let signature_path = repository.signed_by();
-    let target_package_path = repository.packages_path(&*ARCHITECTURE);
+    let target_package_path = repository
+        .packages_path(&*ARCHITECTURE)
+        .ok_or("No se pudo construir la ruta del archivo de paquetes")?;
 
     println!("Descargado: {}", inrelease_path);
     Ok(DownloadedInRelease::new(

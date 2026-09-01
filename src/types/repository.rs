@@ -1,5 +1,5 @@
 #[derive(Debug, PartialEq, Clone)]
-pub struct Repository {
+pub(crate) struct Repository {
     pub(crate) uris: Vec<String>,
     pub(crate) suites: Vec<String>,
     pub(crate) components: Vec<String>,
@@ -16,14 +16,11 @@ impl Repository {
         }
     }
 
-    pub fn component(&self) -> String {
-        self.components
-            .first()
-            .expect("Se espera al menos un componente")
-            .clone()
+    pub(crate) fn component(&self) -> Option<String> {
+        self.components.first().cloned()
     }
 
-    pub fn signed_by(&self) -> String {
+    pub(crate) fn signed_by(&self) -> String {
         self.signed_by.clone()
     }
 
@@ -31,25 +28,19 @@ impl Repository {
         self.uris.iter()
     }
 
-    pub fn suite(&self) -> String {
-        self.suites
-            .first()
-            .expect("Se espera al menos una suite")
-            .clone()
+    pub(crate) fn suite(&self) -> Option<String> {
+        self.suites.first().cloned()
     }
 
-    pub fn inrelease_path(&self) -> String {
-        let base_url = self.urls().next().unwrap().clone();
-        let suite = self.suite();
-        format!("{}/dists/{}/InRelease", base_url, suite)
+    pub fn inrelease_path(&self) -> Option<String> {
+        let base_url = self.urls().next()?.clone();
+        let suite = self.suite()?;
+        Some(format!("{}/dists/{}/InRelease", base_url, suite))
     }
 
-    pub fn packages_path(&self, architecture: &str) -> String {
-        format!(
-            "{}/binary-{}/Packages",
-            self.component(),
-            architecture
-        )
+    pub fn packages_path(&self, architecture: &str) -> Option<String> {
+        self.component()
+            .map(|component| format!("{}/binary-{}/Packages", component, architecture))
     }
 
     pub(crate) fn is_valid(&self) -> bool {

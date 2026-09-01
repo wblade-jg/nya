@@ -10,7 +10,7 @@ use nom::{
 use tokio::fs;
 use tokio::io;
 
-pub use crate::types::Repository;
+use crate::types::Repository;
 
 fn skip_comment(input: &str) -> IResult<&str, ()> {
     value(
@@ -107,7 +107,7 @@ fn parse_file(input: &str) -> IResult<&str, Vec<Repository>> {
     .parse(input)
 }
 
-pub async fn read_repositories_from_file(filepath: &str) -> io::Result<Vec<Repository>> {
+pub(crate) async fn read_repositories_from_file(filepath: &str) -> io::Result<Vec<Repository>> {
     let file_content = fs::read_to_string(filepath).await?;
 
     let (_, repositories) = parse_file(&file_content)

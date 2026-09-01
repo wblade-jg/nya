@@ -1,8 +1,8 @@
 pub mod commands;
-pub mod download;
-pub mod package_info;
-pub mod parser;
-pub mod signature;
-pub mod types;
-pub mod url;
 pub(crate) mod configuration;
+pub(crate) mod download;
+pub(crate) mod package_info;
+pub(crate) mod parser;
+pub(crate) mod signature;
+pub(crate) mod types;
+pub(crate) mod url;

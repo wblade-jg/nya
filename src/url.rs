@@ -1,6 +1,6 @@
 use url::Url;
 
-pub fn format_url(separator: &str, uri: &str) -> Option<String> {
+pub(crate) fn format_url(separator: &str, uri: &str) -> Option<String> {
     let url_parsed = Url::parse(uri).ok()?;
     let domain = url_parsed.host_str()?;
 

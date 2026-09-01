@@ -3,7 +3,7 @@ use std::fs::File;
 
 use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
 
-pub fn verify_inrelease_signature(
+pub(crate) fn verify_inrelease_signature(
     msg: &CleartextSignedMessage,
     key: &SignedPublicKey,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -23,7 +23,7 @@ pub fn verify_inrelease_signature(
     }
 }
 
-pub fn validate_signature_file(
+pub(crate) fn validate_signature_file(
     signed_path: &str,
     key_path: &str,
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
@@ -45,11 +45,11 @@ mod tests {
     #[test]
     fn verifies_inrelease_signed_by_subkey() {
         let (key, _) = SignedPublicKey::from_string(
-            include_str!("../tests/fixtures/key.pub.asc"),
+            include_str!("fixtures/key.pub.asc"),
         )
         .unwrap();
         let (msg, _) = CleartextSignedMessage::from_string(
-            include_str!("../tests/fixtures/InRelease"),
+            include_str!("fixtures/InRelease"),
         )
         .unwrap();
 
@@ -60,10 +60,10 @@ mod tests {
     #[test]
     fn rejects_tampered_inrelease() {
         let (key, _) = SignedPublicKey::from_string(
-            include_str!("../tests/fixtures/key.pub.asc"),
+            include_str!("fixtures/key.pub.asc"),
         )
         .unwrap();
-        let tampered = include_str!("../tests/fixtures/InRelease")
+        let tampered = include_str!("fixtures/InRelease")
             .replace("Origin: Nya Test", "Origin: HACKER");
         let (msg, _) = CleartextSignedMessage::from_string(&tampered).unwrap();
 

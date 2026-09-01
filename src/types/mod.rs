@@ -1,8 +1,10 @@
 mod repository;
-pub use repository::Repository;
+pub(crate) use repository::Repository;
 
 #[derive(Debug, Clone, Copy)]
-pub enum HashType {
+#[non_exhaustive]
+#[allow(dead_code)]
+pub(crate) enum HashType {
     MD5,
     SHA1,
     SHA256,
@@ -10,7 +12,7 @@ pub enum HashType {
 }
 
 impl HashType {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             HashType::MD5 => "MD5",
             HashType::SHA1 => "SHA1",
@@ -19,7 +21,8 @@ impl HashType {
         }
     }
 
-    pub fn size(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn size(&self) -> usize {
         match self {
             HashType::MD5 => 32,
             HashType::SHA1 => 40,
@@ -29,39 +32,41 @@ impl HashType {
     }
 }
 
-pub struct PackageFileInfo {
+#[allow(dead_code)]
+pub(crate) struct PackageFileInfo {
     hash: String,
     size: usize,
     path: String,
 }
 
+#[allow(dead_code)]
 impl PackageFileInfo {
-    pub fn new(hash: String, size: usize, path: String) -> Self {
+    pub(crate) fn new(hash: String, size: usize, path: String) -> Self {
         PackageFileInfo { hash, size, path }
     }
 
-    pub fn hash(&self) -> &str {
+    pub(crate) fn hash(&self) -> &str {
         &self.hash
     }
 
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.size
     }
 
-    pub fn path(&self) -> &str {
+    pub(crate) fn path(&self) -> &str {
         &self.path
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct DownloadedInRelease {
+pub(crate) struct DownloadedInRelease {
     inrelease_path: String,
     signature_path: String,
     target_package_path: String,
 }
 
 impl DownloadedInRelease {
-    pub fn new(
+    pub(crate) fn new(
         inrelease_path: String,
         signature_path: String,
         target_package_path: String,
@@ -73,15 +78,15 @@ impl DownloadedInRelease {
         }
     }
 
-    pub fn inrelease_path(&self) -> &str {
+    pub(crate) fn inrelease_path(&self) -> &str {
         &self.inrelease_path
     }
 
-    pub fn signature_path(&self) -> &str {
+    pub(crate) fn signature_path(&self) -> &str {
         &self.signature_path
     }
 
-    pub fn target_package_path(&self) -> &str {
+    pub(crate) fn target_package_path(&self) -> &str {
         &self.target_package_path
     }
 }

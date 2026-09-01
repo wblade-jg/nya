@@ -1,6 +1,6 @@
 use crate::types::{HashType, PackageFileInfo};
 
-pub fn get_package_file_info(
+pub(crate) fn get_package_file_info(
     content: &str,
     target_path: &str,
 ) -> Result<PackageFileInfo, Box<dyn std::error::Error + Send + Sync>> {
