@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod download;
 pub mod package_info;
 pub mod parser;
