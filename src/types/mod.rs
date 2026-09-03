@@ -1,8 +1,6 @@
 mod repository;
 pub(crate) use repository::Repository;
 
-use crate::configuration::architecture;
-
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 #[allow(dead_code)]
@@ -63,22 +61,15 @@ impl PackageFileInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct DownloadedInRelease {
     inrelease_path: String,
-    signature_path: String,
-    target_package_path: String,
+    pub repository: Repository,
 }
 
 impl DownloadedInRelease {
-    pub(crate) fn from_repository(repository: &Repository, downloaded_inrelease_path: String) -> Result<Self, Box<dyn std::error::Error>> {
-        let signature_path = repository.signed_by();
-        let target_package_path = repository
-            .packages_path(architecture())
-            .ok_or("No se pudo construir la ruta del archivo de paquetes")?;
-
-        Ok(DownloadedInRelease {
-            inrelease_path: downloaded_inrelease_path,
-            signature_path,
-            target_package_path,
-        })
+    pub(crate) fn new(inrelease_path: String, repository: Repository) -> Self {
+        DownloadedInRelease {
+            inrelease_path,
+            repository,
+        }
     }
     
     pub(crate) fn inrelease_path(&self) -> &str {
@@ -86,10 +77,10 @@ impl DownloadedInRelease {
     }
 
     pub(crate) fn signature_path(&self) -> &str {
-        &self.signature_path
+        self.repository.signed_by()
     }
 
-    pub(crate) fn target_package_path(&self) -> &str {
-        &self.target_package_path
+    pub(crate) fn target_package_path(&self, architecture: &str) -> String {
+        format!("/{}/binary-{}/Packages", self.repository.component().unwrap(), architecture)
     }
 }

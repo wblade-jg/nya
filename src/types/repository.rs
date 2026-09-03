@@ -16,31 +16,20 @@ impl Repository {
         }
     }
 
-    pub(crate) fn component(&self) -> Option<String> {
-        self.components.first().cloned()
+    pub(crate) fn component(&self) -> Option<&str> {
+        self.components.first().map(|s| s.as_str())
     }
 
-    pub(crate) fn signed_by(&self) -> String {
-        self.signed_by.clone()
+    pub(crate) fn signed_by(&self) -> &str {
+        &self.signed_by
     }
 
-    fn urls(&self) -> impl Iterator<Item = &String> {
+    pub fn urls(&self) -> impl Iterator<Item = &String> {
         self.uris.iter()
     }
 
-    pub(crate) fn suite(&self) -> Option<String> {
-        self.suites.first().cloned()
-    }
-
-    pub fn inrelease_path(&self) -> Option<String> {
-        let base_url = self.urls().next()?.clone();
-        let suite = self.suite()?;
-        Some(format!("{}/dists/{}/InRelease", base_url, suite))
-    }
-
-    pub fn packages_path(&self, architecture: &str) -> Option<String> {
-        self.component()
-            .map(|component| format!("{}/binary-{}/Packages", component, architecture))
+    pub(crate) fn suite(&self) -> Option<&str> {
+        self.suites.first().map(|s| s.as_str())
     }
 
     pub(crate) fn is_valid(&self) -> bool {

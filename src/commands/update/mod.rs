@@ -1,4 +1,4 @@
-use crate::configuration::Configuration ;
+use crate::configuration::{Configuration, architecture};
 use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
 use crate::{download, package_info, parser, signature, url};
 use futures::stream::{self, StreamExt};
@@ -66,9 +66,9 @@ async fn download_inrelease(
     client: Client,
     config: &Configuration
 ) -> Result<DownloadedInRelease, Box<dyn std::error::Error>> {
-    let download_url = repository
-        .inrelease_path()
-        .ok_or("No se pudo construir la ruta del InRelease")?;
+    let suite = repository.suite().ok_or("No se encontró suite en el repositorio")?;
+    let base_url = repository.urls().next().ok_or("No se encontró URL en el repositorio")?;
+    let download_url = format!("{}/dists/{}/InRelease", base_url, suite);
 
     let filename = url::format_url("_", &download_url)
         .ok_or("No se pudo formatear la URL del InRelease")?;
@@ -81,7 +81,7 @@ async fn download_inrelease(
         })?;
 
     println!("Descargado: {}", inrelease_path);
-    DownloadedInRelease::from_repository(&repository, inrelease_path)
+    Ok(DownloadedInRelease::new(inrelease_path, repository))
 }
 
 fn process_inrelease(
@@ -92,5 +92,5 @@ fn process_inrelease(
         downloaded.signature_path(),
     )?;
 
-    package_info::get_package_file_info(&content, downloaded.target_package_path())
+    package_info::get_package_file_info(&content, &downloaded.target_package_path(architecture()))
 }
