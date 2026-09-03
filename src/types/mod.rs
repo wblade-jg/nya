@@ -81,6 +81,6 @@ impl DownloadedInRelease {
     }
 
     pub(crate) fn target_package_path(&self, architecture: &str) -> String {
-        format!("/{}/binary-{}/Packages", self.repository.component().unwrap(), architecture)
+        format!("{}/binary-{}/Packages", self.repository.component().unwrap(), architecture)
     }
 }
