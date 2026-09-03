@@ -3,7 +3,32 @@ use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
 use crate::{download, package_info, parser, signature, url};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
+use sha2::{Digest, Sha256};
 use tokio::task;
+
+fn calculate_file_hash(file_path: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    use std::fs::File;
+    use std::io::Read;
+    
+    let mut file = File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    
+    let result = hasher.finalize();
+    let hex_string = result.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    
+    Ok(hex_string)
+}
 
 async fn execute_pipeline(repositories: Vec<Repository>, config: &Configuration) {
     let client = Client::new();

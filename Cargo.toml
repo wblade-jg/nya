@@ -9,6 +9,7 @@ futures = "0.3.34"
 nom = "8.0.0"
 pgp = "0.20.0"
 reqwest = { version = "0.13.4", features = ["stream"] }
+sha2 = "0.11.0"
 tokio = { version = "1.53.1", features = [
       "rt-multi-thread",
       "macros",
