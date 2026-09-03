@@ -1,7 +1,29 @@
 use std::error::Error;
 use std::fs::File;
-
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
+
+pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut file = File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    
+    let result = hasher.finalize();
+    let hex_string = result.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    
+    Ok(hex_string)
+}
 
 pub(crate) fn verify_inrelease_signature(
     msg: &CleartextSignedMessage,

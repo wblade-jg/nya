@@ -1,35 +1,10 @@
 use crate::configuration::{Configuration, architecture};
 use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
-use crate::{download, package_info, parser, signature, url};
+use crate::{download, package_info, parser, integrity, url};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::task;
-
-fn calculate_file_hash(file_path: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    use std::fs::File;
-    use std::io::Read;
-    
-    let mut file = File::open(file_path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 8192];
-    
-    loop {
-        let bytes_read = file.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-    
-    let result = hasher.finalize();
-    let hex_string = result.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>();
-    
-    Ok(hex_string)
-}
 
 async fn execute_pipeline(repositories: Vec<Repository>, config: &Configuration) {
     let client = Client::new();
@@ -117,7 +92,7 @@ async fn download_inrelease(
 fn process_inrelease(
     downloaded: DownloadedInRelease,
 ) -> Result<(DownloadedInRelease, PackageFileInfo), Box<dyn std::error::Error + Send + Sync>> {
-    let content = signature::validate_signature_file(
+    let content = integrity::validate_signature_file(
         downloaded.inrelease_path(),
         downloaded.signature_path(),
     )?;
@@ -147,7 +122,7 @@ async fn download_packages_file(
         if Path::new(&file_path).exists() {
             if let Ok(hash_result) = task::spawn_blocking({
                 let path = file_path.clone();
-                move || calculate_file_hash(&path)
+                move || integrity::calculate_file_hash(&path)
             }).await {
                 if let Ok(existing_hash) = hash_result {
                     if existing_hash == package_info.hash() {
@@ -170,7 +145,7 @@ async fn download_packages_file(
         {
             if let Ok(hash_result) = task::spawn_blocking({
                 let path = downloaded_filepath.clone();
-                move || calculate_file_hash(&path)
+                move || integrity::calculate_file_hash(&path)
             }).await {
                 match hash_result {
                     Ok(downloaded_hash) => {
