@@ -14,9 +14,9 @@ enum Commands {
     ///Updates the list of repositories
     Update,
     ///Installs a package
-    Install { 
+    Install {
         ///Name of the package
-        package_name: String 
+        package_name: String,
     },
 }
 
@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Update => {
             update(&config).await;
-        },
+        }
         Commands::Install { package_name } => {
             println!("Instalando: {}", package_name);
         }

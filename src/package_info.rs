@@ -6,14 +6,12 @@ pub(crate) fn get_package_file_info(
 ) -> Result<PackageFileInfo, Box<dyn std::error::Error + Send + Sync>> {
     let hash_type = HashType::SHA256;
 
-    let block_hash_start = content
-        .find(hash_type.as_str())
-        .ok_or_else(|| {
-            format!(
-                "No se encontro la seccion {} en el InRelease",
-                hash_type.as_str()
-            )
-        })?;
+    let block_hash_start = content.find(hash_type.as_str()).ok_or_else(|| {
+        format!(
+            "No se encontro la seccion {} en el InRelease",
+            hash_type.as_str()
+        )
+    })?;
 
     let content_from_hash_start = &content[block_hash_start..];
 
