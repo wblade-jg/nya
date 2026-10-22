@@ -1,14 +1,16 @@
+use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs::File;
-use sha2::{Digest, Sha256};
 use std::io::Read;
-use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
 
-pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn calculate_file_hash(
+    file_path: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut file = File::open(file_path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
-    
+
     loop {
         let bytes_read = file.read(&mut buffer)?;
         if bytes_read == 0 {
@@ -16,12 +18,13 @@ pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, Box<dyn std
         }
         hasher.update(&buffer[..bytes_read]);
     }
-    
+
     let result = hasher.finalize();
-    let hex_string = result.iter()
+    let hex_string = result
+        .iter()
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
-    
+
     Ok(hex_string)
 }
 
@@ -66,27 +69,22 @@ mod tests {
 
     #[test]
     fn verifies_inrelease_signed_by_subkey() {
-        let (key, _) = SignedPublicKey::from_string(
-            include_str!("fixtures/key.pub.asc"),
-        )
-        .unwrap();
-        let (msg, _) = CleartextSignedMessage::from_string(
-            include_str!("fixtures/InRelease"),
-        )
-        .unwrap();
+        let (key, _) = SignedPublicKey::from_string(include_str!("fixtures/key.pub.asc")).unwrap();
+        let (msg, _) =
+            CleartextSignedMessage::from_string(include_str!("fixtures/InRelease")).unwrap();
 
         let res = verify_inrelease_signature(&msg, &key);
-        assert!(res.is_ok(), "la firma de la subclave debería validar: {res:?}");
+        assert!(
+            res.is_ok(),
+            "la firma de la subclave debería validar: {res:?}"
+        );
     }
 
     #[test]
     fn rejects_tampered_inrelease() {
-        let (key, _) = SignedPublicKey::from_string(
-            include_str!("fixtures/key.pub.asc"),
-        )
-        .unwrap();
-        let tampered = include_str!("fixtures/InRelease")
-            .replace("Origin: Nya Test", "Origin: HACKER");
+        let (key, _) = SignedPublicKey::from_string(include_str!("fixtures/key.pub.asc")).unwrap();
+        let tampered =
+            include_str!("fixtures/InRelease").replace("Origin: Nya Test", "Origin: HACKER");
         let (msg, _) = CleartextSignedMessage::from_string(&tampered).unwrap();
 
         assert!(verify_inrelease_signature(&msg, &key).is_err());

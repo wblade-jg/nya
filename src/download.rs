@@ -6,7 +6,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 pub async fn download_file(
     url: &str,
     filename: &str,
-    download_path: &str, 
+    download_path: &str,
     client: Client,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut stream = client.get(url).send().await?.bytes_stream();
