@@ -1,21 +1,25 @@
 use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
 use sha2::{Digest, Sha256};
-use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 
-pub(crate) fn calculate_file_hash(
-    file_path: &str,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let mut file =
-        File::open(file_path).map_err(|e| format!("No se pudo abrir {file_path}: {e}"))?;
+use crate::error::NyaError;
+
+pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, NyaError> {
+    let mut file = File::open(file_path).map_err(|source| NyaError::OpenFile {
+        path: file_path.to_string(),
+        source,
+    })?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
 
     loop {
         let bytes_read = file
             .read(&mut buffer)
-            .map_err(|e| format!("No se pudo leer {file_path}: {e}"))?;
+            .map_err(|source| NyaError::ReadFile {
+                path: file_path.to_string(),
+                source,
+            })?;
         if bytes_read == 0 {
             break;
         }
@@ -34,7 +38,8 @@ pub(crate) fn calculate_file_hash(
 pub(crate) fn verify_inrelease_signature(
     msg: &CleartextSignedMessage,
     key: &SignedPublicKey,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+    key_path: &str,
+) -> Result<(), NyaError> {
     if msg.verify(key).is_ok() {
         return Ok(());
     }
@@ -47,26 +52,39 @@ pub(crate) fn verify_inrelease_signature(
     if subkey_ok {
         Ok(())
     } else {
-        Err("La firma no coincide con la clave pública".into())
+        Err(NyaError::SignatureMismatch {
+            key: key_path.to_string(),
+        })
     }
 }
 
 pub(crate) fn validate_signature_file(
     signed_path: &str,
     key_path: &str,
-) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let key_file = File::open(key_path)
-        .map_err(|e| format!("No se pudo abrir la clave pública {key_path}: {e}"))?;
-    let (public_key, _) = SignedPublicKey::from_reader_single(key_file)
-        .map_err(|e| format!("No se pudo leer la clave pública {key_path}: {e}"))?;
+) -> Result<String, NyaError> {
+    let key_file = File::open(key_path).map_err(|source| NyaError::OpenFile {
+        path: key_path.to_string(),
+        source,
+    })?;
+    let (public_key, _) =
+        SignedPublicKey::from_reader_single(key_file).map_err(|e| NyaError::InvalidKey {
+            path: key_path.to_string(),
+            reason: e.to_string(),
+        })?;
 
-    let signed_file = std::fs::read_to_string(signed_path)
-        .map_err(|e| format!("No se pudo leer el fichero firmado {signed_path}: {e}"))?;
-    let (message, _) = CleartextSignedMessage::from_string(&signed_file)
-        .map_err(|e| format!("No se pudo parsear el cleartext de {signed_path}: {e}"))?;
+    let signed_file =
+        std::fs::read_to_string(signed_path).map_err(|source| NyaError::ReadFile {
+            path: signed_path.to_string(),
+            source,
+        })?;
+    let (message, _) = CleartextSignedMessage::from_string(&signed_file).map_err(|e| {
+        NyaError::InvalidCleartext {
+            path: signed_path.to_string(),
+            reason: e.to_string(),
+        }
+    })?;
 
-    verify_inrelease_signature(&message, &public_key)
-        .map_err(|_| format!("La firma no coincide con la clave {key_path}"))?;
+    verify_inrelease_signature(&message, &public_key, key_path)?;
 
     Ok(message.signed_text())
 }
@@ -81,7 +99,7 @@ mod tests {
         let (msg, _) =
             CleartextSignedMessage::from_string(include_str!("fixtures/InRelease")).unwrap();
 
-        let res = verify_inrelease_signature(&msg, &key);
+        let res = verify_inrelease_signature(&msg, &key, "fixtures/key.pub.asc");
         assert!(
             res.is_ok(),
             "la firma de la subclave debería validar: {res:?}"
@@ -95,7 +113,11 @@ mod tests {
             include_str!("fixtures/InRelease").replace("Origin: Nya Test", "Origin: HACKER");
         let (msg, _) = CleartextSignedMessage::from_string(&tampered).unwrap();
 
-        assert!(verify_inrelease_signature(&msg, &key).is_err());
+        let err = verify_inrelease_signature(&msg, &key, "fixtures/key.pub.asc").unwrap_err();
+        assert!(
+            matches!(&err, NyaError::SignatureMismatch { key } if key == "fixtures/key.pub.asc"),
+            "esperaba SignatureMismatch con la ruta de la clave: {err:?}"
+        );
     }
 
     #[test]
@@ -103,8 +125,8 @@ mod tests {
         let err = validate_signature_file("no-importa", "/no/existe/clave.asc").unwrap_err();
 
         assert!(
-            err.to_string().contains("/no/existe/clave.asc"),
-            "el error debe nombrar la clave que falta: {err}"
+            matches!(&err, NyaError::OpenFile { path, .. } if path == "/no/existe/clave.asc"),
+            "el error debe portar la clave que falta: {err:?}"
         );
     }
 
@@ -122,8 +144,8 @@ mod tests {
     fn calculate_file_hash_missing_file_names_the_path() {
         let err = calculate_file_hash("/no/existe/fichero").unwrap_err();
         assert!(
-            err.to_string().contains("/no/existe/fichero"),
-            "el error debe nombrar el fichero que falta: {err}"
+            matches!(&err, NyaError::OpenFile { path, .. } if path == "/no/existe/fichero"),
+            "el error debe portar el fichero que falta: {err:?}"
         );
     }
 
@@ -149,8 +171,8 @@ mod tests {
         let err = validate_signature_file("/no/existe/InRelease", key_path).unwrap_err();
 
         assert!(
-            err.to_string().contains("/no/existe/InRelease"),
-            "el error debe nombrar el fichero firmado que falta: {err}"
+            matches!(&err, NyaError::ReadFile { path, .. } if path == "/no/existe/InRelease"),
+            "el error debe portar el fichero firmado que falta: {err:?}"
         );
     }
 
@@ -163,23 +185,32 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(
-            err.to_string().contains("clave pública"),
-            "el error debe indicar que la clave no se pudo leer: {err}"
+            matches!(&err, NyaError::InvalidKey { path: key_path, .. } if key_path == path.to_str().unwrap()),
+            "esperaba InvalidKey con la ruta de la clave: {err:?}"
         );
     }
 
     #[test]
     fn validate_signature_file_plaintext_input_errors() {
         let key_path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/key.pub.asc");
-        let err = validate_signature_file(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/sources"),
-            key_path,
-        )
-        .unwrap_err();
+        let sources = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/sources");
+        let err = validate_signature_file(sources, key_path).unwrap_err();
 
         assert!(
-            err.to_string().contains("cleartext"),
-            "un fichero sin cleartext PGP debe producir un error de parseo: {err}"
+            matches!(&err, NyaError::InvalidCleartext { path, .. } if path == sources),
+            "un fichero sin cleartext PGP debe producir InvalidCleartext: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_signature_file_happy_path_returns_signed_text() {
+        let inrelease = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/InRelease");
+        let key = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/key.pub.asc");
+
+        let signed_text = validate_signature_file(inrelease, key).unwrap();
+        assert!(
+            signed_text.contains("Origin: Nya Test"),
+            "el texto devuelto debe ser el mensaje sin firmar: {signed_text}"
         );
     }
 }
