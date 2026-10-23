@@ -44,6 +44,25 @@ fn clean_inside_block(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
+fn skip_preamble(input: &str) -> IResult<&str, ()> {
+    let mut input = input;
+    loop {
+        if let Ok((rest, _)) = skip_comment(input) {
+            input = rest;
+            continue;
+        }
+        if let Ok((rest, _)) = blank_line(input) {
+            if rest.len() == input.len() {
+                break;
+            }
+            input = rest;
+            continue;
+        }
+        break;
+    }
+    Ok((input, ()))
+}
+
 fn parse_key_value_line(input: &str) -> IResult<&str, (String, String)> {
     terminated(
         map(
@@ -58,7 +77,7 @@ fn parse_key_value_line(input: &str) -> IResult<&str, (String, String)> {
 }
 
 fn parse_block(input: &str) -> IResult<&str, Repository> {
-    let (mut input, _) = clean_inside_block(input)?;
+    let (mut input, _) = skip_preamble(input)?;
     let mut repo = Repository::new();
 
     while let Ok((next_input, (key, value))) = parse_key_value_line(input) {
@@ -231,6 +250,76 @@ mod tests {
         assert!(
             message.contains("línea 4") && message.contains("columna 1"),
             "el error debe indicar línea y columna: {message}"
+        );
+    }
+
+    #[test]
+    fn parses_sources_fixture_with_content_assertions() {
+        let repos = parse_content(include_str!("fixtures/sources")).unwrap();
+        assert_eq!(repos.len(), 2, "la fixture debe producir 2 repositorios");
+
+        assert_eq!(
+            repos[0].uris,
+            vec![
+                "http://mirror1.example.com/ubuntu",
+                "http://mirror2.example.com/ubuntu"
+            ],
+            "el primer repo debe acumular sus 2 URIs y ignorar claves desconocidas"
+        );
+        assert_eq!(repos[0].suites, vec!["noble", "noble-updates"]);
+        assert_eq!(repos[0].components, vec!["main", "universe"]);
+        assert_eq!(
+            repos[0].signed_by,
+            "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+        );
+
+        assert_eq!(repos[1].uris, vec!["http://archive.example.com/debian"]);
+        assert_eq!(repos[1].suites, vec!["stable"]);
+        assert_eq!(repos[1].components, vec!["main"]);
+        assert_eq!(
+            repos[1].signed_by,
+            "/usr/share/keyrings/debian-archive-keyring.gpg"
+        );
+    }
+
+    #[test]
+    fn missing_required_field_returns_err() {
+        let content = "URIs: http://example.com\nSuites: stable\n";
+        let result = parse_content(content);
+        assert!(
+            result.is_err(),
+            "un bloque sin Components debe producir Err (is_valid falla)"
+        );
+    }
+
+    #[test]
+    fn crlf_content_parses_like_lf() {
+        let lf = include_str!("fixtures/sources");
+        let crlf = lf.replace('\n', "\r\n");
+
+        let repos_lf = parse_content(lf).unwrap();
+        let repos_crlf = parse_content(&crlf).unwrap();
+
+        assert_eq!(repos_lf.len(), repos_crlf.len());
+        for (a, b) in repos_lf.iter().zip(repos_crlf.iter()) {
+            assert_eq!(a.uris, b.uris);
+            assert_eq!(a.suites, b.suites);
+            assert_eq!(a.components, b.components);
+            assert_eq!(a.signed_by, b.signed_by);
+        }
+    }
+
+    #[test]
+    fn folded_uris_continuation_is_silently_dropped() {
+        // Documenta el comportamiento actual: una continuación indentada
+        // de deb822 (folding) no se entiende y se descarta como clave
+        // desconocida — la segunda URI se pierde sin error.
+        let content = "URIs: http://mirror1.example.com/ubuntu\n http://mirror2.example.com/ubuntu\nSuites: stable\nComponents: main\n";
+        let repos = parse_content(content).unwrap();
+        assert_eq!(
+            repos[0].uris,
+            vec!["http://mirror1.example.com/ubuntu"],
+            "la URI plegada en la línea de continuación se pierde (limitación actual)"
         );
     }
 }

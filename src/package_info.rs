@@ -79,7 +79,6 @@ mod tests {
 
     #[test]
     fn verify_package_file_info() {
-        let hash_type = HashType::SHA256;
         let inrelease_content = r#"
           Origin: Test
           Suite: stable
@@ -92,15 +91,13 @@ mod tests {
            aaaa 12345 main/binary-amd64/Packages
           "#;
         let target_path = "main/binary-amd64/Packages";
-        let result = get_package_file_info(inrelease_content, target_path);
-        assert!(result.is_ok(), "get_package_file_info should return Ok");
-        let package_file_info = result.unwrap();
+        let package_file_info = get_package_file_info(inrelease_content, target_path).unwrap();
         assert_eq!(
-            package_file_info.hash().len(),
-            hash_type.size(),
-            "hash should be {} characters long",
-            hash_type.size()
+            package_file_info.hash(),
+            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
         );
+        assert_eq!(package_file_info.size(), 12345);
+        assert_eq!(package_file_info.path(), target_path);
     }
 
     #[test]
@@ -179,5 +176,59 @@ mod tests {
           "#;
         let result = get_package_file_info(inrelease_content_nonhex, "main/binary-amd64/Packages");
         assert!(result.is_err(), "hash no-hex debe fallar");
+    }
+
+    #[test]
+    fn missing_sha256_section_returns_err() {
+        let inrelease_content = r#"
+          Origin: Test
+          Suite: stable
+          
+          MD5Sum:
+           a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6 12345 main/binary-amd64/Packages
+          "#;
+        let err =
+            get_package_file_info(inrelease_content, "main/binary-amd64/Packages").unwrap_err();
+        assert!(
+            err.to_string().contains("No se encontro la seccion SHA256"),
+            "sin sección SHA256 el error debe nombrar la sección: {err}"
+        );
+    }
+
+    #[test]
+    fn non_numeric_size_on_target_line_returns_err() {
+        let inrelease_content = r#"
+          Origin: Test
+          Suite: stable
+          
+          SHA256:
+           a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2 abc main/binary-amd64/Packages
+          "#;
+        let err =
+            get_package_file_info(inrelease_content, "main/binary-amd64/Packages").unwrap_err();
+        assert!(
+            err.to_string().contains("Tamaño no numerico"),
+            "tamaño no numérico en la línea objetivo debe fallar: {err}"
+        );
+    }
+
+    #[test]
+    fn uppercase_hash_is_accepted() {
+        // Documenta el comportamiento actual: el parser acepta hash en
+        // mayúsculas, pero calculate_file_hash produce minúsculas; la
+        // comparación en update daría falso "hash no coincide" en cada
+        // ejecución si un InRelease publicara hashes en mayúsculas.
+        let inrelease_content = r#"
+          Origin: Test
+          Suite: stable
+          
+          SHA256:
+           A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2 12345 main/binary-amd64/Packages
+          "#;
+        let result = get_package_file_info(inrelease_content, "main/binary-amd64/Packages");
+        assert!(
+            result.is_ok(),
+            "un hash en mayúsculas debe aceptarse (comportamiento actual): {result:?}"
+        );
     }
 }

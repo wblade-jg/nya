@@ -107,4 +107,79 @@ mod tests {
             "el error debe nombrar la clave que falta: {err}"
         );
     }
+
+    #[test]
+    fn calculate_file_hash_matches_fixture_inrelease() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/InRelease");
+        let hash = calculate_file_hash(path).unwrap();
+        assert_eq!(
+            hash, "902be8d8c05c4a7998bed6a2055c1be36d7ddcc7f116ef1296f4ab671cc9eb03",
+            "el SHA256 del fixture InRelease debe coincadir"
+        );
+    }
+
+    #[test]
+    fn calculate_file_hash_missing_file_names_the_path() {
+        let err = calculate_file_hash("/no/existe/fichero").unwrap_err();
+        assert!(
+            err.to_string().contains("/no/existe/fichero"),
+            "el error debe nombrar el fichero que falta: {err}"
+        );
+    }
+
+    #[test]
+    fn calculate_file_hash_handles_multiple_chunks() {
+        // Fichero >8192 bytes para ejercitar el loop multi-chunk.
+        let path = std::env::temp_dir().join(format!("nya-hash-test-{}", std::process::id()));
+        std::fs::write(&path, vec![b'a'; 20_000]).unwrap();
+
+        let hash = calculate_file_hash(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(
+            hash.unwrap(),
+            "cc17faaad36649c4603dda4d8ff97cb149722af0bcac0746305a2134ad2d0b97",
+            "el hash de 20000 bytes debe coincidir"
+        );
+    }
+
+    #[test]
+    fn validate_signature_file_missing_signed_file_names_the_path() {
+        let key_path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/key.pub.asc");
+        let err = validate_signature_file("/no/existe/InRelease", key_path).unwrap_err();
+
+        assert!(
+            err.to_string().contains("/no/existe/InRelease"),
+            "el error debe nombrar el fichero firmado que falta: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_signature_file_corrupt_key_errors() {
+        let path = std::env::temp_dir().join(format!("nya-corrupt-key-{}", std::process::id()));
+        std::fs::write(&path, "esto no es una clave PGP").unwrap();
+
+        let err = validate_signature_file("no-importa", path.to_str().unwrap()).unwrap_err();
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            err.to_string().contains("clave pública"),
+            "el error debe indicar que la clave no se pudo leer: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_signature_file_plaintext_input_errors() {
+        let key_path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/key.pub.asc");
+        let err = validate_signature_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/fixtures/sources"),
+            key_path,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("cleartext"),
+            "un fichero sin cleartext PGP debe producir un error de parseo: {err}"
+        );
+    }
 }

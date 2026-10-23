@@ -33,6 +33,7 @@ impl HashType {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) struct PackageFileInfo {
     hash: String,
     size: usize,

@@ -1,0 +1,17 @@
+# Fixture de prueba para el parser deb822 — no usar en producción.
+# El primer repositorio tiene 2 URIs (multi-mirror) y claves desconocidas
+# (Types, Architectures) que el parser debe ignorar.
+
+Types: deb
+URIs: http://mirror1.example.com/ubuntu http://mirror2.example.com/ubuntu
+Suites: noble noble-updates
+Components: main universe
+Architectures: amd64 arm64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+# Segundo repositorio, una sola URI.
+Types: deb
+URIs: http://archive.example.com/debian
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
