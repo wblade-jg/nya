@@ -80,11 +80,14 @@ impl DownloadedInRelease {
         self.repository.signed_by()
     }
 
-    pub(crate) fn target_package_path(&self, architecture: &str) -> String {
-        format!(
-            "{}/binary-{}/Packages",
-            self.repository.component().unwrap(),
-            architecture
-        )
+    pub(crate) fn target_package_path(
+        &self,
+        architecture: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let component = self
+            .repository
+            .component()
+            .ok_or("No se encontró component en el repositorio")?;
+        Ok(format!("{}/binary-{}/Packages", component, architecture))
     }
 }

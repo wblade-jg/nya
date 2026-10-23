@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Update => {
-            update(&config).await;
+            update(&config).await?;
         }
         Commands::Install { package_name } => {
             println!("Instalando: {}", package_name);

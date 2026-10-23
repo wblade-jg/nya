@@ -4,21 +4,37 @@ use crate::{download, integrity, package_info, parser, url};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use std::path::Path;
+use std::time::Duration;
 use tokio::task;
 
-async fn execute_pipeline(repositories: Vec<Repository>, config: &Configuration) {
-    let client = Client::new();
+async fn execute_pipeline(
+    repositories: Vec<Repository>,
+    config: &Configuration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()?;
 
-    let pipeline = stream::iter(
+    let total = repositories.len();
+
+    let (_, failures) = stream::iter(
         repositories
             .into_iter()
             .map(|repository| download_inrelease(repository, client.clone(), config)),
     )
     .buffer_unordered(10)
-    .filter_map(|result| async move { result.ok() })
-    .map(|downloaded| {
+    .map(|result| {
         let client = client.clone();
         async move {
+            let downloaded = match result {
+                Ok(downloaded) => downloaded,
+                Err(e) => {
+                    eprintln!("Error descargando InRelease: {}", e);
+                    return Err(e);
+                }
+            };
+
             let result = task::spawn_blocking(move || process_inrelease(downloaded))
                 .await
                 .map_err(|e| format!("Error en spawn_blocking: {}", e))?;
@@ -38,27 +54,35 @@ async fn execute_pipeline(repositories: Vec<Repository>, config: &Configuration)
         }
     })
     .buffer_unordered(10)
-    .filter_map(
-        |result: Result<(), Box<dyn std::error::Error>>| async move {
-            if let Err(e) = &result {
+    .fold((0usize, 0usize), |(ok, fail), result| async move {
+        match result {
+            Ok(()) => (ok + 1, fail),
+            Err(e) => {
                 eprintln!("Error en el pipeline: {}", e);
+                (ok, fail + 1)
             }
-            result.ok()
-        },
-    );
+        }
+    })
+    .await;
 
-    pipeline.collect::<Vec<_>>().await;
+    if failures > 0 {
+        eprintln!(
+            "Actualización fallida: {} de {} repositorios con error",
+            failures, total
+        );
+        return Err(format!(
+            "{} de {} repositorios fallaron durante la actualización",
+            failures, total
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
-pub async fn update(config: &Configuration) {
-    match parser::read_repositories_from_file(&config.repositories_filepath).await {
-        Ok(repositories) => {
-            execute_pipeline(repositories, config).await;
-        }
-        Err(e) => {
-            eprintln!("Error: {}", e);
-        }
-    }
+pub async fn update(config: &Configuration) -> Result<(), Box<dyn std::error::Error>> {
+    let repositories = parser::read_repositories_from_file(&config.repositories_filepath).await?;
+    execute_pipeline(repositories, config).await
 }
 
 async fn download_inrelease(
@@ -102,7 +126,7 @@ fn process_inrelease(
 
     let package_info = package_info::get_package_file_info(
         &content,
-        &downloaded.target_package_path(architecture()),
+        &downloaded.target_package_path(architecture())?,
     )?;
 
     Ok((downloaded, package_info))
@@ -167,6 +191,12 @@ async fn download_packages_file(
                             package_info.hash(),
                             downloaded_hash
                         );
+                        if let Err(e) = std::fs::remove_file(&downloaded_filepath) {
+                            eprintln!(
+                                "No se pudo eliminar el archivo corrupto {}: {}",
+                                downloaded_filepath, e
+                            );
+                        }
                         continue;
                     }
 

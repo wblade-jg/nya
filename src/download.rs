@@ -9,7 +9,12 @@ pub async fn download_file(
     download_path: &str,
     client: Client,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let mut stream = client.get(url).send().await?.bytes_stream();
+    let mut stream = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes_stream();
 
     let filepath = format!("{}/{}", download_path, filename);
     let mut file = File::create(&filepath).await?;
