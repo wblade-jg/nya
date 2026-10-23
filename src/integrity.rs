@@ -6,20 +6,15 @@ use std::io::Read;
 use crate::error::NyaError;
 
 pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, NyaError> {
-    let mut file = File::open(file_path).map_err(|source| NyaError::OpenFile {
-        path: file_path.to_string(),
-        source,
-    })?;
+    let mut file =
+        File::open(file_path).map_err(|source| NyaError::io("abrir", file_path, source))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
 
     loop {
         let bytes_read = file
             .read(&mut buffer)
-            .map_err(|source| NyaError::ReadFile {
-                path: file_path.to_string(),
-                source,
-            })?;
+            .map_err(|source| NyaError::io("leer", file_path, source))?;
         if bytes_read == 0 {
             break;
         }
@@ -62,21 +57,16 @@ pub(crate) fn validate_signature_file(
     signed_path: &str,
     key_path: &str,
 ) -> Result<String, NyaError> {
-    let key_file = File::open(key_path).map_err(|source| NyaError::OpenFile {
-        path: key_path.to_string(),
-        source,
-    })?;
+    let key_file =
+        File::open(key_path).map_err(|source| NyaError::io("abrir", key_path, source))?;
     let (public_key, _) =
         SignedPublicKey::from_reader_single(key_file).map_err(|e| NyaError::InvalidKey {
             path: key_path.to_string(),
             reason: e.to_string(),
         })?;
 
-    let signed_file =
-        std::fs::read_to_string(signed_path).map_err(|source| NyaError::ReadFile {
-            path: signed_path.to_string(),
-            source,
-        })?;
+    let signed_file = std::fs::read_to_string(signed_path)
+        .map_err(|source| NyaError::io("leer", signed_path, source))?;
     let (message, _) = CleartextSignedMessage::from_string(&signed_file).map_err(|e| {
         NyaError::InvalidCleartext {
             path: signed_path.to_string(),
@@ -125,7 +115,7 @@ mod tests {
         let err = validate_signature_file("no-importa", "/no/existe/clave.asc").unwrap_err();
 
         assert!(
-            matches!(&err, NyaError::OpenFile { path, .. } if path == "/no/existe/clave.asc"),
+            matches!(&err, NyaError::Io { path, .. } if path == "/no/existe/clave.asc"),
             "el error debe portar la clave que falta: {err:?}"
         );
     }
@@ -144,7 +134,7 @@ mod tests {
     fn calculate_file_hash_missing_file_names_the_path() {
         let err = calculate_file_hash("/no/existe/fichero").unwrap_err();
         assert!(
-            matches!(&err, NyaError::OpenFile { path, .. } if path == "/no/existe/fichero"),
+            matches!(&err, NyaError::Io { path, .. } if path == "/no/existe/fichero"),
             "el error debe portar el fichero que falta: {err:?}"
         );
     }
@@ -171,7 +161,7 @@ mod tests {
         let err = validate_signature_file("/no/existe/InRelease", key_path).unwrap_err();
 
         assert!(
-            matches!(&err, NyaError::ReadFile { path, .. } if path == "/no/existe/InRelease"),
+            matches!(&err, NyaError::Io { path, .. } if path == "/no/existe/InRelease"),
             "el error debe portar el fichero firmado que falta: {err:?}"
         );
     }

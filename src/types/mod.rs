@@ -1,8 +1,6 @@
 mod repository;
 pub(crate) use repository::Repository;
 
-use crate::error::NyaError;
-
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 #[allow(dead_code)]
@@ -83,11 +81,89 @@ impl DownloadedInRelease {
         self.repository.signed_by()
     }
 
-    pub(crate) fn target_package_path(&self, architecture: &str) -> Result<String, NyaError> {
-        let component = self
-            .repository
-            .component()
-            .ok_or(NyaError::MissingComponent)?;
-        Ok(format!("{}/binary-{}/Packages", component, architecture))
+    pub(crate) fn target_package_path(&self, architecture: &str) -> String {
+        format!(
+            "{}/binary-{}/Packages",
+            self.repository.component(),
+            architecture
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_ok() -> Repository {
+        Repository::new(
+            vec!["http://mirror.example.com/ubuntu".to_string()],
+            vec!["noble".to_string()],
+            vec!["main".to_string()],
+            "/usr/share/keyrings/test.gpg".to_string(),
+        )
+        .expect("repo con todos los campos debe construirse")
+    }
+
+    #[test]
+    fn target_package_path_joins_component_and_architecture() {
+        let downloaded = DownloadedInRelease::new("/tmp/InRelease".to_string(), repo_ok());
+        assert_eq!(
+            downloaded.target_package_path("amd64"),
+            "main/binary-amd64/Packages"
+        );
+    }
+
+    #[test]
+    fn repository_new_rejects_empty_fields() {
+        let uris = vec!["http://mirror.example.com/ubuntu".to_string()];
+        let suites = vec!["noble".to_string()];
+        let components = vec!["main".to_string()];
+        let signed_by = "/usr/share/keyrings/test.gpg".to_string();
+
+        assert_eq!(
+            Repository::new(
+                Vec::new(),
+                suites.clone(),
+                components.clone(),
+                signed_by.clone()
+            ),
+            Err("URIs")
+        );
+        assert_eq!(
+            Repository::new(
+                uris.clone(),
+                Vec::new(),
+                components.clone(),
+                signed_by.clone()
+            ),
+            Err("Suites")
+        );
+        assert_eq!(
+            Repository::new(uris.clone(), suites.clone(), Vec::new(), signed_by.clone()),
+            Err("Components")
+        );
+        assert_eq!(
+            Repository::new(
+                uris.clone(),
+                suites.clone(),
+                components.clone(),
+                String::new()
+            ),
+            Err("Signed-By")
+        );
+        assert!(
+            Repository::new(uris, suites, components, signed_by).is_ok(),
+            "todos los campos presentes debe construir"
+        );
+    }
+
+    #[test]
+    fn repository_accessors_return_first_values() {
+        let repo = repo_ok();
+        assert_eq!(repo.suite(), "noble");
+        assert_eq!(repo.component(), "main");
+        assert_eq!(repo.signed_by(), "/usr/share/keyrings/test.gpg");
+        assert_eq!(repo.uris().len(), 1);
+        assert_eq!(repo.urls().count(), 1);
     }
 }

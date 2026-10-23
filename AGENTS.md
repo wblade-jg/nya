@@ -9,7 +9,8 @@ y descarga verificada de `Packages`.
 
 - Binario `nya` (`src/main.rs`) + biblioteca (`src/lib.rs`).
 - CLI (clap): `nya update` (implementado), `nya install <paquete>` (stub).
-- Runtime tokio multi-thread; errores con `Box<dyn Error>`.
+- Runtime tokio multi-thread; errores con `NyaError` (`thiserror`, módulo
+  `src/error.rs`); `Box<dyn Error>` solo en `main.rs`.
 - Gobernanza: `.specify/memory/constitution.md` (principios I–V). En conflicto
   con esta guía, prevalece la constitución. Jerarquía entre principios y
   waivers: ver constitución §Jerarquía.
@@ -59,6 +60,7 @@ Variables de entorno: `CACHE_DIR` (default `/etc/nya`), `REPOSITORIES_FILE`
 | `src/package_info.rs` | extrae hash/tamaño/ruta de `Packages` desde InRelease |
 | `src/download.rs` | descarga streaming con reqwest |
 | `src/url.rs` | URL → nombre de archivo plano |
+| `src/error.rs` | `NyaError` (thiserror): errores tipados del pipeline |
 | `src/types/` | `Repository`, `HashType`, `PackageFileInfo`, `DownloadedInRelease` |
 | `src/configuration.rs` | config por env vars; mapeo de arquitectura del host |
 | `src/fixtures/` | InRelease y clave pública de prueba |
@@ -80,8 +82,10 @@ Variables de entorno: `CACHE_DIR` (default `/etc/nya`), `REPOSITORIES_FILE`
 
 ## Convenciones
 
-- **Idioma**: mensajes al usuario (`println!`, `eprintln!`, `panic!`, textos de
-  error) en español; identificadores, módulos y commits en inglés.
+- **Idioma**: el código va en inglés — identificadores (variables, funciones,
+  tipos, módulos), comentarios y commits. Solo van en español los mensajes al
+  usuario (`println!`, `eprintln!`, `panic!`), los textos de error
+  (`NyaError`) y los logs; el resto, en inglés.
 - **Commits**: Conventional Commits en inglés: `feat(scope):`, `refactor:`,
   `fix:`, `chore:`, `docs:` (scope opcional, p. ej. `feat(update):`).
 - **Visibilidad**: solo `commands` y `configuration` son `pub`; resto
@@ -91,19 +95,18 @@ Variables de entorno: `CACHE_DIR` (default `/etc/nya`), `REPOSITORIES_FILE`
 - **`#[allow(dead_code)]`** en tipos reservados al roadmap (`HashType::MD5`,
   tamaños de hash): no eliminarlos, se usarán al implementar `install`.
 - El parser ignora claves desconocidas (`Types`, `Architectures`) y comentarios
-  `#`; valida la presencia de `URIs`, `Suites` y `Components`.
+  `#`; `Repository::new` exige `URIs`, `Suites`, `Components` y `Signed-By`
+  no vacíos.
 
 ## Pendiente (contexto para nuevas tareas)
 
 - `nya install`: parsear `Packages`, resolver dependencias,
   descargar/descomprimir e instalar `.deb`.
 - Multi-suite/multi-componente (hoy solo usa el primero: `suites.first()`).
-- Arquitecturas más allá de amd64/arm64 (hoy `panic!`).
+- Arquitecturas más allá de amd64/arm64 (hoy `NyaError::UnsupportedArch`).
 - `Release` firmado (no cleartext) como fallback; validación de confianza de
   la clave (hoy TOFU: se verifica contra cualquier clave en `Signed-By`;
   falta fijado de fingerprint).
-- Tests unitarios para `parser.rs` (requisito de cierre para `install`; ver
-  constitución III).
 
 ## Reglas para agentes
 
