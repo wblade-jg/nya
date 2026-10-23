@@ -107,9 +107,48 @@ fn parse_file(input: &str) -> IResult<&str, Vec<Repository>> {
     .parse(input)
 }
 
+fn error_position(content: &str, rest: &str) -> (usize, usize) {
+    let offset = content.len().saturating_sub(rest.len());
+    let before = &content[..offset];
+    let line = before.matches('\n').count() + 1;
+    let column = offset - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+    (line, column)
+}
+
+fn line_snippet(content: &str, rest: &str) -> String {
+    let (line, _) = error_position(content, rest);
+    let text = content.lines().nth(line - 1).unwrap_or("").trim();
+    text.chars().take(60).collect()
+}
+
+fn parse_error(content: &str, rest: &str) -> io::Error {
+    let (line, column) = error_position(content, rest.trim_start());
+    let snippet = line_snippet(content, rest.trim_start());
+    let base = format!("error de parseo en línea {line}, columna {column}");
+    let message = if snippet.is_empty() {
+        base
+    } else {
+        format!("{base}, cerca de {snippet:?}")
+    };
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
 pub(crate) fn parse_content(content: &str) -> io::Result<Vec<Repository>> {
-    let (rest, repositories) = parse_file(content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {}", e)))?;
+    let hay_contenido = content.lines().any(|line| {
+        let line = line.trim_start();
+        !line.is_empty() && !line.starts_with('#')
+    });
+    if !hay_contenido {
+        return Ok(Vec::new());
+    }
+
+    let (rest, repositories) = parse_file(content).map_err(|e| {
+        let rest = match &e {
+            nom::Err::Error(err) | nom::Err::Failure(err) => err.input,
+            nom::Err::Incomplete(_) => "",
+        };
+        parse_error(content, rest)
+    })?;
 
     let mut rest = rest;
     loop {
@@ -124,9 +163,12 @@ pub(crate) fn parse_content(content: &str) -> io::Result<Vec<Repository>> {
     }
 
     if !rest.is_empty() {
+        let (line, column) = error_position(content, rest);
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Contenido no consumido tras el último bloque: {:?}", rest),
+            format!(
+                "contenido no consumido tras el último bloque en línea {line}, columna {column}: {rest:?}"
+            ),
         ));
     }
 
@@ -134,8 +176,13 @@ pub(crate) fn parse_content(content: &str) -> io::Result<Vec<Repository>> {
 }
 
 pub(crate) async fn read_repositories_from_file(filepath: &str) -> io::Result<Vec<Repository>> {
-    let file_content = fs::read_to_string(filepath).await?;
-    parse_content(&file_content)
+    let file_content = fs::read_to_string(filepath).await.map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("No se pudo leer el fichero {filepath}: {e}"),
+        )
+    })?;
+    parse_content(&file_content).map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))
 }
 
 #[cfg(test)]
@@ -162,5 +209,28 @@ mod tests {
         );
         let repos = result.unwrap();
         assert_eq!(repos.len(), 1);
+    }
+
+    #[test]
+    fn empty_or_comment_only_content_returns_no_repositories() {
+        for content in ["", "   \n\n", "# solo un comentario\n", "\n # indented\n\n"] {
+            let repos = parse_content(content)
+                .unwrap_or_else(|e| panic!("contenido {content:?} debe parsear sin error: {e}"));
+            assert!(
+                repos.is_empty(),
+                "contenido {content:?} no debe producir repositorios"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_error_reports_line_and_column() {
+        let content = "URIs: http://example.com\nSuites: stable\n\nmalformed garbage";
+        let err = parse_content(content).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("línea 4") && message.contains("columna 1"),
+            "el error debe indicar línea y columna: {message}"
+        );
     }
 }

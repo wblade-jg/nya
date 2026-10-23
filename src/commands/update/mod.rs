@@ -7,6 +7,30 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::task;
 
+fn repo_label(repository: &Repository) -> String {
+    let primera_uri = repository
+        .urls()
+        .next()
+        .map(String::as_str)
+        .unwrap_or("repositorio sin URIs");
+    match repository.suite() {
+        Some(suite) => format!("{primera_uri} ({suite})"),
+        None => primera_uri.to_string(),
+    }
+}
+
+fn mirror_error(what: &str, causas: &[String]) -> String {
+    if causas.is_empty() {
+        return format!("No hay mirrors de {what} que probar");
+    }
+    let lista = causas
+        .iter()
+        .map(|causa| format!("    - {causa}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{what} no descargable de ningún mirror:\n{lista}")
+}
+
 async fn execute_pipeline(
     repositories: Vec<Repository>,
     config: &Configuration,
@@ -18,42 +42,43 @@ async fn execute_pipeline(
 
     let total = repositories.len();
 
-    let (_, failures) = stream::iter(
-        repositories
-            .into_iter()
-            .map(|repository| download_inrelease(repository, client.clone(), config)),
-    )
+    let (_, failures) = stream::iter(repositories.into_iter().map(|repository| {
+        let label = repo_label(&repository);
+        let download = download_inrelease(repository, client.clone(), config);
+        async move {
+            let result = download.await.map_err(|e| e.to_string());
+            (label, result)
+        }
+    }))
     .buffer_unordered(10)
-    .map(|result| {
+    .map(|(label, result)| {
         let client = client.clone();
         async move {
-            let downloaded = match result {
-                Ok(downloaded) => downloaded,
+            let result: Result<(), String> = match result {
                 Err(e) => {
                     eprintln!("Error descargando InRelease: {}", e);
-                    return Err(e);
+                    Err(e)
+                }
+                Ok(downloaded) => {
+                    match task::spawn_blocking(move || process_inrelease(downloaded)).await {
+                        Err(e) => Err(format!("Error en spawn_blocking: {}", e)),
+                        Ok(Err(e)) => Err(e.to_string()),
+                        Ok(Ok((downloaded, package_info))) => download_packages_file(
+                            downloaded.repository,
+                            package_info,
+                            config,
+                            client,
+                        )
+                        .await
+                        .map_err(|e| e.to_string()),
+                    }
                 }
             };
-
-            let result = task::spawn_blocking(move || process_inrelease(downloaded))
-                .await
-                .map_err(|e| format!("Error en spawn_blocking: {}", e))?;
-
-            match result {
-                Ok((downloaded_inrelease, package_info)) => {
-                    download_packages_file(
-                        downloaded_inrelease.repository,
-                        package_info,
-                        config,
-                        client,
-                    )
-                    .await
-                }
-                Err(e) => Err(format!("Error procesando InRelease: {}", e).into()),
-            }
+            (label, result)
         }
     })
     .buffer_unordered(10)
+    .map(|(label, result)| result.map_err(|e| format!("{label}: {e}")))
     .fold((0usize, 0usize), |(ok, fail), result| async move {
         match result {
             Ok(()) => (ok + 1, fail),
@@ -94,13 +119,16 @@ async fn download_inrelease(
         .suite()
         .ok_or("No se encontró suite en el repositorio")?;
     let urls: Vec<_> = repository.urls().cloned().collect();
+    let mut causas: Vec<String> = Vec::new();
 
     for url in urls {
         let download_url = format!("{}/dists/{}/InRelease", url, suite);
-        let filename = url::format_url("_", &download_url)
-            .ok_or("No se pudo formatear la URL del InRelease")?;
+        let Some(filename) = url::format_url("_", &download_url) else {
+            causas.push(format!("{download_url}: URL no válida"));
+            continue;
+        };
 
-        if let Ok(downloaded_filepath) = download::download_file(
+        match download::download_file(
             &download_url,
             &filename,
             &config.download_path,
@@ -108,12 +136,15 @@ async fn download_inrelease(
         )
         .await
         {
-            println!("Descargado InRelease: {}", downloaded_filepath);
-            return Ok(DownloadedInRelease::new(downloaded_filepath, repository));
+            Ok(downloaded_filepath) => {
+                println!("Descargado InRelease: {}", downloaded_filepath);
+                return Ok(DownloadedInRelease::new(downloaded_filepath, repository));
+            }
+            Err(e) => causas.push(format!("{download_url}: {e}")),
         }
     }
 
-    Err("No se pudo descargar el InRelease de ningún mirror".into())
+    Err(mirror_error("InRelease", &causas).into())
 }
 
 fn process_inrelease(
@@ -138,78 +169,98 @@ async fn download_packages_file(
     config: &Configuration,
     client: Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let urls = repository.urls();
     let suite = repository
         .suite()
         .ok_or("No se encontró suite en el repositorio")?;
+    let mut causas: Vec<String> = Vec::new();
 
-    for base_url in urls {
+    for base_url in repository.urls() {
         let download_url = format!("{}/dists/{}/{}", base_url, suite, package_info.path());
-
-        let filename =
-            url::format_url("_", &download_url).ok_or("No se pudo formatear la URL del paquete")?;
-
+        let Some(filename) = url::format_url("_", &download_url) else {
+            causas.push(format!("{download_url}: URL no válida"));
+            continue;
+        };
         let file_path = format!("{}/{}", config.download_path, filename);
 
-        if Path::new(&file_path).exists()
-            && let Ok(hash_result) = task::spawn_blocking({
+        if Path::new(&file_path).exists() {
+            let hash_result = task::spawn_blocking({
                 let path = file_path.clone();
                 move || integrity::calculate_file_hash(&path)
             })
-            .await
-            && let Ok(existing_hash) = hash_result
-        {
-            if existing_hash == package_info.hash() {
-                println!(
-                    "Packages file already exists with correct hash, skipping download: {}",
-                    file_path
-                );
-                return Ok(());
-            } else {
-                println!("Packages file exists but hash mismatch, re-downloading...");
+            .await;
+
+            match hash_result {
+                Ok(Ok(existing_hash)) if existing_hash == package_info.hash() => {
+                    println!(
+                        "El fichero Packages ya existe con el hash correcto, se omite la descarga: {}",
+                        file_path
+                    );
+                    return Ok(());
+                }
+                Ok(Ok(_)) => {
+                    println!(
+                        "El fichero Packages existe pero el hash no coincide, volviendo a descargar..."
+                    );
+                }
+                Ok(Err(e)) => {
+                    causas.push(format!("{download_url}: no se pudo calcular el hash: {e}"));
+                }
+                Err(e) => {
+                    causas.push(format!("{download_url}: error en spawn_blocking: {e}"));
+                }
             }
         }
 
-        if let Ok(downloaded_filepath) = download::download_file(
+        let downloaded_filepath = match download::download_file(
             &download_url,
             &filename,
             &config.download_path,
             client.clone(),
         )
         .await
-            && let Ok(hash_result) = task::spawn_blocking({
-                let path = downloaded_filepath.clone();
-                move || integrity::calculate_file_hash(&path)
-            })
-            .await
         {
-            match hash_result {
-                Ok(downloaded_hash) => {
-                    if downloaded_hash != package_info.hash() {
-                        eprintln!(
-                            "Hash mismatch after download. Expected: {}, Got: {}",
-                            package_info.hash(),
-                            downloaded_hash
-                        );
-                        if let Err(e) = std::fs::remove_file(&downloaded_filepath) {
-                            eprintln!(
-                                "No se pudo eliminar el archivo corrupto {}: {}",
-                                downloaded_filepath, e
-                            );
-                        }
-                        continue;
-                    }
-
-                    println!("Descargado y verificado Packages: {}", downloaded_filepath);
-                    return Ok(());
-                }
-                Err(e) => {
-                    eprintln!("Error calculando hash: {}", e);
-                    continue;
-                }
+            Ok(filepath) => filepath,
+            Err(e) => {
+                causas.push(format!("{download_url}: {e}"));
+                continue;
             }
+        };
+
+        let hash_result = task::spawn_blocking({
+            let path = downloaded_filepath.clone();
+            move || integrity::calculate_file_hash(&path)
+        })
+        .await;
+
+        let downloaded_hash = match hash_result {
+            Ok(Ok(hash)) => hash,
+            Ok(Err(e)) => {
+                causas.push(format!("{download_url}: no se pudo calcular el hash: {e}"));
+                continue;
+            }
+            Err(e) => {
+                causas.push(format!("{download_url}: error en spawn_blocking: {e}"));
+                continue;
+            }
+        };
+
+        if downloaded_hash != package_info.hash() {
+            causas.push(format!(
+                "{download_url}: el hash no coincide (esperado {}, obtenido {downloaded_hash})",
+                package_info.hash()
+            ));
+            if let Err(e) = std::fs::remove_file(&downloaded_filepath) {
+                eprintln!(
+                    "No se pudo eliminar el fichero corrupto {}: {}",
+                    downloaded_filepath, e
+                );
+            }
+            continue;
         }
+
+        println!("Descargado y verificado Packages: {}", downloaded_filepath);
+        return Ok(());
     }
 
-    Err("No se pudo descargar el archivo Packages de ningún mirror".into())
+    Err(mirror_error("Packages", &causas).into())
 }

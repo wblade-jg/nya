@@ -7,12 +7,15 @@ use std::io::Read;
 pub(crate) fn calculate_file_hash(
     file_path: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let mut file = File::open(file_path)?;
+    let mut file =
+        File::open(file_path).map_err(|e| format!("No se pudo abrir {file_path}: {e}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
 
     loop {
-        let bytes_read = file.read(&mut buffer)?;
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("No se pudo leer {file_path}: {e}"))?;
         if bytes_read == 0 {
             break;
         }
@@ -44,7 +47,7 @@ pub(crate) fn verify_inrelease_signature(
     if subkey_ok {
         Ok(())
     } else {
-        Err("No matching signature found".into())
+        Err("La firma no coincide con la clave pública".into())
     }
 }
 
@@ -52,13 +55,18 @@ pub(crate) fn validate_signature_file(
     signed_path: &str,
     key_path: &str,
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let key_file = File::open(key_path)?;
-    let (public_key, _) = SignedPublicKey::from_reader_single(key_file)?;
+    let key_file = File::open(key_path)
+        .map_err(|e| format!("No se pudo abrir la clave pública {key_path}: {e}"))?;
+    let (public_key, _) = SignedPublicKey::from_reader_single(key_file)
+        .map_err(|e| format!("No se pudo leer la clave pública {key_path}: {e}"))?;
 
-    let signed_file = std::fs::read_to_string(signed_path)?;
-    let (message, _) = CleartextSignedMessage::from_string(&signed_file)?;
+    let signed_file = std::fs::read_to_string(signed_path)
+        .map_err(|e| format!("No se pudo leer el fichero firmado {signed_path}: {e}"))?;
+    let (message, _) = CleartextSignedMessage::from_string(&signed_file)
+        .map_err(|e| format!("No se pudo parsear el cleartext de {signed_path}: {e}"))?;
 
-    verify_inrelease_signature(&message, &public_key)?;
+    verify_inrelease_signature(&message, &public_key)
+        .map_err(|_| format!("La firma no coincide con la clave {key_path}"))?;
 
     Ok(message.signed_text())
 }
@@ -88,5 +96,15 @@ mod tests {
         let (msg, _) = CleartextSignedMessage::from_string(&tampered).unwrap();
 
         assert!(verify_inrelease_signature(&msg, &key).is_err());
+    }
+
+    #[test]
+    fn missing_key_file_error_names_the_path() {
+        let err = validate_signature_file("no-importa", "/no/existe/clave.asc").unwrap_err();
+
+        assert!(
+            err.to_string().contains("/no/existe/clave.asc"),
+            "el error debe nombrar la clave que falta: {err}"
+        );
     }
 }
