@@ -226,7 +226,7 @@ fn process_inrelease(
 
     let package_info = package_info::get_package_file_info(
         &content,
-        &downloaded.target_package_path(architecture())?,
+        &downloaded.target_package_path(architecture()?)?,
     )?;
 
     Ok((downloaded, package_info))

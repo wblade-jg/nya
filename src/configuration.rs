@@ -43,10 +43,35 @@ fn configure_repositories_file() -> String {
     repositories_file
 }
 
-pub fn architecture() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => panic!("Arquitectura no soportada: {other}"),
+pub(crate) fn to_debian_arch(arch: &str) -> Result<&'static str, String> {
+    match arch {
+        "x86_64" => Ok("amd64"),
+        "aarch64" => Ok("arm64"),
+        other => Err(format!("Arquitectura no soportada: {other}")),
+    }
+}
+
+pub fn architecture() -> Result<&'static str, String> {
+    to_debian_arch(std::env::consts::ARCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_debian_arch_maps_supported_architectures() {
+        assert_eq!(to_debian_arch("x86_64"), Ok("amd64"));
+        assert_eq!(to_debian_arch("aarch64"), Ok("arm64"));
+    }
+
+    #[test]
+    fn to_debian_arch_rejects_unsupported_architecture_without_panicking() {
+        let result = to_debian_arch("riscv64");
+        assert!(
+            result.is_err(),
+            "una arquitectura no soportada debe devolver Err, no panic"
+        );
+        assert!(result.unwrap_err().contains("riscv64"));
     }
 }
