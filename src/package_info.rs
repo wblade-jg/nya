@@ -1,9 +1,10 @@
+use crate::error::NyaError;
 use crate::types::{HashType, PackageFileInfo};
 
 pub(crate) fn get_package_file_info(
     content: &str,
     target_path: &str,
-) -> Result<PackageFileInfo, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<PackageFileInfo, NyaError> {
     let hash_type = HashType::SHA256;
     let header = hash_type.as_str();
     let header_tag = format!("{}:", header);
@@ -13,12 +14,7 @@ pub(crate) fn get_package_file_info(
     let header_idx = lines
         .iter()
         .position(|line| line.trim_start().starts_with(&header_tag))
-        .ok_or_else(|| {
-            format!(
-                "No se encontro la seccion {} en el InRelease",
-                hash_type.as_str()
-            )
-        })?;
+        .ok_or(NyaError::MissingSection { section: header })?;
 
     let header_line = lines[header_idx];
     let header_indent = header_line.len() - header_line.trim_start().len();
@@ -44,19 +40,16 @@ pub(crate) fn get_package_file_info(
         }
 
         if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!(
-                "Hash {} invalido (longitud o caracteres) para {}",
-                header, target_path
-            )
-            .into());
+            return Err(NyaError::InvalidPackageHash {
+                path: target_path.to_string(),
+            });
         }
 
-        let size = size_str.parse::<usize>().map_err(|_| {
-            format!(
-                "Tamaño no numerico en la seccion {} para {}",
-                header, target_path
-            )
-        })?;
+        let size = size_str
+            .parse::<usize>()
+            .map_err(|_| NyaError::InvalidPackageSize {
+                path: target_path.to_string(),
+            })?;
 
         return Ok(PackageFileInfo::new(
             hash.to_string(),
@@ -65,12 +58,10 @@ pub(crate) fn get_package_file_info(
         ));
     }
 
-    Err(format!(
-        "No se encontró {} en la sección {}",
-        target_path,
-        hash_type.as_str()
-    )
-    .into())
+    Err(NyaError::PackageEntryNotFound {
+        section: header,
+        path: target_path.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -113,15 +104,15 @@ mod tests {
            a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6 12345 main/binary-amd64/Packages
           "#;
         let target_path = "main/binary-amd64/Packages";
-        let result = get_package_file_info(inrelease_content, target_path);
+        let err = get_package_file_info(inrelease_content, target_path).unwrap_err();
         assert!(
-            result.is_err(),
-            "debe fallar si la entrada solo está en MD5Sum, no en SHA256"
+            matches!(&err, NyaError::PackageEntryNotFound { section, path } if *section == "SHA256" && path == target_path),
+            "solo debe buscar en SHA256: {err:?}"
         );
     }
 
     #[test]
-    fn non_numeric_size_after_sha256_header_is_skipped() {
+    fn non_target_line_is_skipped_regardless_of_its_fields() {
         let inrelease_content = r#"
           Origin: Test
           Suite: stable
@@ -134,7 +125,7 @@ mod tests {
         let result = get_package_file_info(inrelease_content, target_path);
         assert!(
             result.is_ok(),
-            "la línea con tamaño no numérico debe ignorarse, no abortar"
+            "una línea cuyo path no coincide se salta sin validar sus campos: {result:?}"
         );
     }
 
@@ -148,10 +139,10 @@ mod tests {
            a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2 12345 notmain/binary-amd64/Packages
           "#;
         let target_path = "main/binary-amd64/Packages";
-        let result = get_package_file_info(inrelease_content, target_path);
+        let err = get_package_file_info(inrelease_content, target_path).unwrap_err();
         assert!(
-            result.is_err(),
-            "notmain/binary-amd64/Packages no debe coincidir con main/binary-amd64/Packages"
+            matches!(&err, NyaError::PackageEntryNotFound { path, .. } if path == target_path),
+            "notmain/... no debe coincidir con main/...: {err:?}"
         );
     }
 
@@ -164,8 +155,12 @@ mod tests {
           SHA256:
            a1b2c3 12345 main/binary-amd64/Packages
           "#;
-        let result = get_package_file_info(inrelease_content_short, "main/binary-amd64/Packages");
-        assert!(result.is_err(), "hash de longitud inválida debe fallar");
+        let err = get_package_file_info(inrelease_content_short, "main/binary-amd64/Packages")
+            .unwrap_err();
+        assert!(
+            matches!(&err, NyaError::InvalidPackageHash { path } if path == "main/binary-amd64/Packages"),
+            "hash de longitud inválida: {err:?}"
+        );
 
         let inrelease_content_nonhex = r#"
           Origin: Test
@@ -174,8 +169,12 @@ mod tests {
           SHA256:
            zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 12345 main/binary-amd64/Packages
           "#;
-        let result = get_package_file_info(inrelease_content_nonhex, "main/binary-amd64/Packages");
-        assert!(result.is_err(), "hash no-hex debe fallar");
+        let err = get_package_file_info(inrelease_content_nonhex, "main/binary-amd64/Packages")
+            .unwrap_err();
+        assert!(
+            matches!(&err, NyaError::InvalidPackageHash { .. }),
+            "hash no-hex: {err:?}"
+        );
     }
 
     #[test]
@@ -190,8 +189,8 @@ mod tests {
         let err =
             get_package_file_info(inrelease_content, "main/binary-amd64/Packages").unwrap_err();
         assert!(
-            err.to_string().contains("No se encontro la seccion SHA256"),
-            "sin sección SHA256 el error debe nombrar la sección: {err}"
+            matches!(&err, NyaError::MissingSection { section } if *section == "SHA256"),
+            "sin sección SHA256: {err:?}"
         );
     }
 
@@ -207,8 +206,8 @@ mod tests {
         let err =
             get_package_file_info(inrelease_content, "main/binary-amd64/Packages").unwrap_err();
         assert!(
-            err.to_string().contains("Tamaño no numerico"),
-            "tamaño no numérico en la línea objetivo debe fallar: {err}"
+            matches!(&err, NyaError::InvalidPackageSize { path } if path == "main/binary-amd64/Packages"),
+            "tamaño no numérico en la línea objetivo: {err:?}"
         );
     }
 
