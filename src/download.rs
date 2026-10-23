@@ -12,10 +12,7 @@ pub async fn download_file(
     client: Client,
     pb: &ProgressBar,
 ) -> Result<String, NyaError> {
-    let http = |source: reqwest::Error| NyaError::Http {
-        url: url.to_string(),
-        source,
-    };
+    let http = |source: reqwest::Error| NyaError::Http { source };
 
     let response = client
         .get(url)
@@ -35,13 +32,10 @@ pub async fn download_file(
     let filepath = format!("{}/{}", download_path, filename);
     let temp_path = format!("{filepath}.part");
 
-    let escritura = async {
+    let write_result = async {
         let file = File::create(&temp_path)
             .await
-            .map_err(|source| NyaError::StoreFile {
-                path: temp_path.clone(),
-                source,
-            })?;
+            .map_err(|source| NyaError::io("guardar", &temp_path, source))?;
         let mut writer = BufWriter::new(file);
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.map_err(http)?;
@@ -49,27 +43,21 @@ pub async fn download_file(
             writer
                 .write_all(&bytes)
                 .await
-                .map_err(|source| NyaError::StoreFile {
-                    path: temp_path.clone(),
-                    source,
-                })?;
+                .map_err(|source| NyaError::io("guardar", &temp_path, source))?;
         }
-        writer.flush().await.map_err(|source| NyaError::StoreFile {
-            path: temp_path.clone(),
-            source,
-        })?;
+        writer
+            .flush()
+            .await
+            .map_err(|source| NyaError::io("guardar", &temp_path, source))?;
         Ok::<(), NyaError>(())
     }
     .await;
 
-    match escritura {
+    match write_result {
         Ok(()) => {
             tokio::fs::rename(&temp_path, &filepath)
                 .await
-                .map_err(|source| NyaError::StoreFile {
-                    path: filepath.clone(),
-                    source,
-                })?;
+                .map_err(|source| NyaError::io("guardar", &filepath, source))?;
             Ok(filepath)
         }
         Err(e) => {

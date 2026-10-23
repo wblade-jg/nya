@@ -1,31 +1,18 @@
 use std::io;
 
-fn format_causas(causas: &[String]) -> String {
-    causas
+fn format_causes(causes: &[String]) -> String {
+    causes
         .iter()
-        .map(|causa| format!("    - {causa}"))
+        .map(|cause| format!("    - {cause}"))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum NyaError {
-    #[error("No se pudo abrir {path}: {source}")]
-    OpenFile {
-        path: String,
-        #[source]
-        source: io::Error,
-    },
-
-    #[error("No se pudo leer {path}: {source}")]
-    ReadFile {
-        path: String,
-        #[source]
-        source: io::Error,
-    },
-
-    #[error("No se pudo guardar {path}: {source}")]
-    StoreFile {
+    #[error("No se pudo {op} {path}: {source}")]
+    Io {
+        op: &'static str,
         path: String,
         #[source]
         source: io::Error,
@@ -33,13 +20,6 @@ pub enum NyaError {
 
     #[error("No se encontró el fichero de repositorios {path}")]
     MissingRepositoriesFile { path: String },
-
-    #[error("No se pudo crear el directorio de caché {path}: {source}")]
-    CreateCacheDir {
-        path: String,
-        #[source]
-        source: io::Error,
-    },
 
     #[error("Arquitectura no soportada: {0}")]
     UnsupportedArch(String),
@@ -62,19 +42,9 @@ pub enum NyaError {
 
     #[error("{source}")]
     Http {
-        url: String,
         #[source]
         source: reqwest::Error,
     },
-
-    #[error("No se pudo crear el cliente HTTP: {0}")]
-    HttpClient(String),
-
-    #[error("No se encontró suite en el repositorio")]
-    MissingSuite,
-
-    #[error("No se encontró component en el repositorio")]
-    MissingComponent,
 
     #[error("No se encontro la seccion {section} en el InRelease")]
     MissingSection { section: &'static str },
@@ -88,10 +58,10 @@ pub enum NyaError {
     #[error("Tamaño no numerico para {path}")]
     InvalidPackageSize { path: String },
 
-    #[error("{what} no descargable de ningún mirror:\n{}", format_causas(.causas))]
+    #[error("{what} no descargable de ningún mirror:\n{}", format_causes(.causes))]
     AllMirrorsFailed {
         what: &'static str,
-        causas: Vec<String>,
+        causes: Vec<String>,
     },
 
     #[error("No hay mirrors de {what} que probar")]
@@ -105,13 +75,21 @@ pub enum NyaError {
 }
 
 impl NyaError {
-    pub(crate) fn mirrors_failed(what: &'static str, causas: &[String]) -> Self {
-        if causas.is_empty() {
+    pub(crate) fn io(op: &'static str, path: &str, source: io::Error) -> Self {
+        NyaError::Io {
+            op,
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub(crate) fn mirrors_failed(what: &'static str, causes: &[String]) -> Self {
+        if causes.is_empty() {
             NyaError::NoMirrors { what }
         } else {
             NyaError::AllMirrorsFailed {
                 what,
-                causas: causas.to_vec(),
+                causes: causes.to_vec(),
             }
         }
     }

@@ -107,23 +107,24 @@ fn parse_key_value_line(input: &str) -> IResult<&str, (String, String)> {
 
 fn parse_block(input: &str) -> IResult<&str, Repository> {
     let (mut input, _) = skip_preamble(input)?;
-    let mut repo = Repository::new();
+    let mut uris = Vec::new();
+    let mut suites = Vec::new();
+    let mut components = Vec::new();
+    let mut signed_by = String::new();
 
     while let Ok((next_input, (key, value))) = parse_key_value_line(input) {
         match key.as_str() {
             "URIs" => {
-                repo.uris.extend(value.split_whitespace().map(String::from));
+                uris.extend(value.split_whitespace().map(String::from));
             }
             "Suites" => {
-                repo.suites
-                    .extend(value.split_whitespace().map(String::from));
+                suites.extend(value.split_whitespace().map(String::from));
             }
             "Components" => {
-                repo.components
-                    .extend(value.split_whitespace().map(String::from));
+                components.extend(value.split_whitespace().map(String::from));
             }
             "Signed-By" => {
-                repo.signed_by = value;
+                signed_by = value;
             }
             _ => (), // Ignore unknown keys
         }
@@ -132,14 +133,10 @@ fn parse_block(input: &str) -> IResult<&str, Repository> {
         input = next_input;
     }
 
-    if !repo.is_valid() {
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Verify,
-        )))
-    } else {
-        Ok((input, repo))
-    }
+    let repo = Repository::new(uris, suites, components, signed_by).map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+    })?;
+    Ok((input, repo))
 }
 
 fn block_separator(input: &str) -> IResult<&str, ()> {
@@ -180,11 +177,11 @@ fn parse_error(content: &str, rest: &str) -> ParseError {
 }
 
 pub(crate) fn parse_content(content: &str) -> Result<Vec<Repository>, ParseError> {
-    let hay_contenido = content.lines().any(|line| {
+    let has_content = content.lines().any(|line| {
         let line = line.trim_start();
         !line.is_empty() && !line.starts_with('#')
     });
-    if !hay_contenido {
+    if !has_content {
         return Ok(Vec::new());
     }
 
@@ -225,10 +222,7 @@ pub(crate) async fn read_repositories_from_file(
 ) -> Result<Vec<Repository>, NyaError> {
     let file_content = fs::read_to_string(filepath)
         .await
-        .map_err(|source| NyaError::ReadFile {
-            path: filepath.to_string(),
-            source,
-        })?;
+        .map_err(|source| NyaError::io("leer", filepath, source))?;
     parse_content(&file_content).map_err(|source| NyaError::Parse {
         path: filepath.to_string(),
         source,
@@ -298,25 +292,28 @@ mod tests {
         assert_eq!(repos.len(), 2, "la fixture debe producir 2 repositorios");
 
         assert_eq!(
-            repos[0].uris,
+            repos[0].uris().to_vec(),
             vec![
                 "http://mirror1.example.com/ubuntu",
                 "http://mirror2.example.com/ubuntu"
             ],
             "el primer repo debe acumular sus 2 URIs y ignorar claves desconocidas"
         );
-        assert_eq!(repos[0].suites, vec!["noble", "noble-updates"]);
-        assert_eq!(repos[0].components, vec!["main", "universe"]);
+        assert_eq!(repos[0].suites().to_vec(), vec!["noble", "noble-updates"]);
+        assert_eq!(repos[0].components().to_vec(), vec!["main", "universe"]);
         assert_eq!(
-            repos[0].signed_by,
+            repos[0].signed_by(),
             "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
         );
 
-        assert_eq!(repos[1].uris, vec!["http://archive.example.com/debian"]);
-        assert_eq!(repos[1].suites, vec!["stable"]);
-        assert_eq!(repos[1].components, vec!["main"]);
         assert_eq!(
-            repos[1].signed_by,
+            repos[1].uris().to_vec(),
+            vec!["http://archive.example.com/debian"]
+        );
+        assert_eq!(repos[1].suites().to_vec(), vec!["stable"]);
+        assert_eq!(repos[1].components().to_vec(), vec!["main"]);
+        assert_eq!(
+            repos[1].signed_by(),
             "/usr/share/keyrings/debian-archive-keyring.gpg"
         );
     }
@@ -324,10 +321,10 @@ mod tests {
     #[test]
     fn missing_required_field_returns_err() {
         let content = "URIs: http://example.com\nSuites: stable\n";
-        let result = parse_content(content);
+        let err = parse_content(content).unwrap_err();
         assert!(
-            result.is_err(),
-            "un bloque sin Components debe producir Err (is_valid falla)"
+            matches!(&err, ParseError::Invalid { .. }),
+            "un bloque sin Components debe producir ParseError::Invalid: {err:?}"
         );
     }
 
@@ -351,10 +348,7 @@ mod tests {
 
         assert_eq!(repos_lf.len(), repos_crlf.len());
         for (a, b) in repos_lf.iter().zip(repos_crlf.iter()) {
-            assert_eq!(a.uris, b.uris);
-            assert_eq!(a.suites, b.suites);
-            assert_eq!(a.components, b.components);
-            assert_eq!(a.signed_by, b.signed_by);
+            assert_eq!(a, b, "CRLF y LF deben producir repositorios idénticos");
         }
     }
 
@@ -366,7 +360,7 @@ mod tests {
         let content = "URIs: http://mirror1.example.com/ubuntu\n http://mirror2.example.com/ubuntu\nSuites: stable\nComponents: main\nSigned-By: /tmp/test-keyring.gpg\n";
         let repos = parse_content(content).unwrap();
         assert_eq!(
-            repos[0].uris,
+            repos[0].uris().to_vec(),
             vec!["http://mirror1.example.com/ubuntu"],
             "la URI plegada en la línea de continuación se pierde (limitación actual)"
         );
@@ -378,7 +372,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, NyaError::ReadFile { path, .. } if path == "/no/existe/sources"),
+            matches!(&err, NyaError::Io { path, .. } if path == "/no/existe/sources"),
             "el error debe portar el path del fichero: {err:?}"
         );
     }

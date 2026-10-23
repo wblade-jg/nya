@@ -31,10 +31,8 @@ pub(crate) fn resolve_cache_dir(value: &str) -> Result<String, NyaError> {
     let base_dir = Path::new(value);
 
     if !base_dir.is_dir() {
-        std::fs::create_dir_all(base_dir).map_err(|source| NyaError::CreateCacheDir {
-            path: value.to_string(),
-            source,
-        })?;
+        std::fs::create_dir_all(base_dir)
+            .map_err(|source| NyaError::io("crear el directorio de caché", value, source))?;
     }
     Ok(value.to_string())
 }
@@ -117,8 +115,8 @@ mod tests {
         std::fs::remove_file(&file).ok();
 
         assert!(
-            matches!(&err, NyaError::CreateCacheDir { path, .. } if path == file.to_str().unwrap()),
-            "esperaba CreateCacheDir con el path: {err:?}"
+            matches!(&err, NyaError::Io { path, .. } if path == file.to_str().unwrap()),
+            "esperaba Io con el path del fichero que bloquea el directorio: {err:?}"
         );
     }
 }
