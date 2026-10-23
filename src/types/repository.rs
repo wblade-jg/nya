@@ -33,6 +33,9 @@ impl Repository {
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        !self.uris.is_empty() && !self.suites.is_empty() && !self.components.is_empty()
+        !self.uris.is_empty()
+            && !self.suites.is_empty()
+            && !self.components.is_empty()
+            && !self.signed_by.is_empty()
     }
 }

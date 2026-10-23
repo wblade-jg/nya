@@ -8,9 +8,38 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
 };
 use tokio::fs;
-use tokio::io;
 
+use crate::error::NyaError;
 use crate::types::Repository;
+
+fn format_snippet(snippet: &str) -> String {
+    if snippet.is_empty() {
+        String::new()
+    } else {
+        format!(", cerca de {snippet:?}")
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ParseError {
+    #[error(
+        "error de parseo en línea {line}, columna {column}{}",
+        format_snippet(.snippet)
+    )]
+    Invalid {
+        line: usize,
+        column: usize,
+        snippet: String,
+    },
+    #[error(
+        "contenido no consumido tras el último bloque en línea {line}, columna {column}: {rest:?}"
+    )]
+    Unconsumed {
+        line: usize,
+        column: usize,
+        rest: String,
+    },
+}
 
 fn skip_comment(input: &str) -> IResult<&str, ()> {
     value(
@@ -140,19 +169,17 @@ fn line_snippet(content: &str, rest: &str) -> String {
     text.chars().take(60).collect()
 }
 
-fn parse_error(content: &str, rest: &str) -> io::Error {
+fn parse_error(content: &str, rest: &str) -> ParseError {
     let (line, column) = error_position(content, rest.trim_start());
     let snippet = line_snippet(content, rest.trim_start());
-    let base = format!("error de parseo en línea {line}, columna {column}");
-    let message = if snippet.is_empty() {
-        base
-    } else {
-        format!("{base}, cerca de {snippet:?}")
-    };
-    io::Error::new(io::ErrorKind::InvalidData, message)
+    ParseError::Invalid {
+        line,
+        column,
+        snippet,
+    }
 }
 
-pub(crate) fn parse_content(content: &str) -> io::Result<Vec<Repository>> {
+pub(crate) fn parse_content(content: &str) -> Result<Vec<Repository>, ParseError> {
     let hay_contenido = content.lines().any(|line| {
         let line = line.trim_start();
         !line.is_empty() && !line.starts_with('#')
@@ -183,25 +210,29 @@ pub(crate) fn parse_content(content: &str) -> io::Result<Vec<Repository>> {
 
     if !rest.is_empty() {
         let (line, column) = error_position(content, rest);
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "contenido no consumido tras el último bloque en línea {line}, columna {column}: {rest:?}"
-            ),
-        ));
+        return Err(ParseError::Unconsumed {
+            line,
+            column,
+            rest: rest.to_string(),
+        });
     }
 
     Ok(repositories)
 }
 
-pub(crate) async fn read_repositories_from_file(filepath: &str) -> io::Result<Vec<Repository>> {
-    let file_content = fs::read_to_string(filepath).await.map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("No se pudo leer el fichero {filepath}: {e}"),
-        )
-    })?;
-    parse_content(&file_content).map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))
+pub(crate) async fn read_repositories_from_file(
+    filepath: &str,
+) -> Result<Vec<Repository>, NyaError> {
+    let file_content = fs::read_to_string(filepath)
+        .await
+        .map_err(|source| NyaError::ReadFile {
+            path: filepath.to_string(),
+            source,
+        })?;
+    parse_content(&file_content).map_err(|source| NyaError::Parse {
+        path: filepath.to_string(),
+        source,
+    })
 }
 
 #[cfg(test)]
@@ -210,17 +241,24 @@ mod tests {
 
     #[test]
     fn malformed_line_after_last_block_returns_err() {
-        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\n\nmalformed garbage line without colon";
-        let result = parse_content(content);
+        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\nSigned-By: /tmp/test-keyring.gpg\n\nmalformed garbage line without colon";
+        let err = parse_content(content).unwrap_err();
         assert!(
-            result.is_err(),
-            "una línea malformada tras el último bloque debe producir Err"
+            matches!(
+                &err,
+                ParseError::Unconsumed {
+                    line: 6,
+                    column: 1,
+                    ..
+                }
+            ),
+            "una línea malformada tras el último bloque debe producir Unconsumed en 6:1: {err:?}"
         );
     }
 
     #[test]
     fn trailing_comment_without_newline_returns_ok() {
-        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\n\n# comentario final sin newline";
+        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\nSigned-By: /tmp/test-keyring.gpg\n\n# comentario final sin newline";
         let result = parse_content(content);
         assert!(
             result.is_ok(),
@@ -246,11 +284,12 @@ mod tests {
     fn parse_error_reports_line_and_column() {
         let content = "URIs: http://example.com\nSuites: stable\n\nmalformed garbage";
         let err = parse_content(content).unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.contains("línea 4") && message.contains("columna 1"),
-            "el error debe indicar línea y columna: {message}"
-        );
+        match &err {
+            ParseError::Invalid { line, column, .. } => {
+                assert_eq!((*line, *column), (4, 1), "posición del error: {err:?}");
+            }
+            other => panic!("esperaba ParseError::Invalid: {other}"),
+        }
     }
 
     #[test]
@@ -293,6 +332,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_signed_by_returns_err() {
+        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\n";
+        let err = parse_content(content).unwrap_err();
+        assert!(
+            matches!(&err, ParseError::Invalid { .. }),
+            "un bloque sin Signed-By debe fallar en is_valid: {err:?}"
+        );
+    }
+
+    #[test]
     fn crlf_content_parses_like_lf() {
         let lf = include_str!("fixtures/sources");
         let crlf = lf.replace('\n', "\r\n");
@@ -314,12 +363,62 @@ mod tests {
         // Documenta el comportamiento actual: una continuación indentada
         // de deb822 (folding) no se entiende y se descarta como clave
         // desconocida — la segunda URI se pierde sin error.
-        let content = "URIs: http://mirror1.example.com/ubuntu\n http://mirror2.example.com/ubuntu\nSuites: stable\nComponents: main\n";
+        let content = "URIs: http://mirror1.example.com/ubuntu\n http://mirror2.example.com/ubuntu\nSuites: stable\nComponents: main\nSigned-By: /tmp/test-keyring.gpg\n";
         let repos = parse_content(content).unwrap();
         assert_eq!(
             repos[0].uris,
             vec!["http://mirror1.example.com/ubuntu"],
             "la URI plegada en la línea de continuación se pierde (limitación actual)"
         );
+    }
+
+    #[tokio::test]
+    async fn read_repositories_missing_file_names_the_path() {
+        let err = read_repositories_from_file("/no/existe/sources")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, NyaError::ReadFile { path, .. } if path == "/no/existe/sources"),
+            "el error debe portar el path del fichero: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_repositories_invalid_content_reports_filename() {
+        let path = std::env::temp_dir().join(format!("nya-parser-test-{}", std::process::id()));
+        std::fs::write(
+            &path,
+            "URIs: http://example.com\nSuites: stable\nComponents: main\nSigned-By: /tmp/k.gpg\n\ngarbage sin dos puntos\n",
+        )
+        .unwrap();
+
+        let err = read_repositories_from_file(path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        std::fs::remove_file(&path).ok();
+
+        match &err {
+            NyaError::Parse {
+                path: reported,
+                source,
+            } => {
+                assert!(
+                    reported.contains("nya-parser-test"),
+                    "el error debe nombrar el fichero: {reported}"
+                );
+                assert!(
+                    matches!(
+                        source,
+                        ParseError::Unconsumed {
+                            line: 6,
+                            column: 1,
+                            ..
+                        }
+                    ),
+                    "posición del contenido sin consumir: {source:?}"
+                );
+            }
+            other => panic!("esperaba NyaError::Parse: {other:?}"),
+        }
     }
 }
