@@ -1,4 +1,5 @@
 use crate::configuration::{Configuration, architecture};
+use crate::error::NyaError;
 use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
 use crate::{download, integrity, package_info, parser, url};
 use futures::stream::{self, StreamExt};
@@ -18,18 +19,6 @@ fn repo_label(repository: &Repository) -> String {
         Some(suite) => format!("{primera_uri} ({suite})"),
         None => primera_uri.to_string(),
     }
-}
-
-fn mirror_error(what: &str, causas: &[String]) -> String {
-    if causas.is_empty() {
-        return format!("No hay mirrors de {what} que probar");
-    }
-    let lista = causas
-        .iter()
-        .map(|causa| format!("    - {causa}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{what} no descargable de ningún mirror:\n{lista}")
 }
 
 fn say(multi: &MultiProgress, linea: impl AsRef<str>) {
@@ -60,7 +49,7 @@ fn packages_style() -> ProgressStyle {
 async fn execute_pipeline(
     repositories: Vec<Repository>,
     config: &Configuration,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), NyaError> {
     let total = repositories.len();
     if total == 0 {
         println!("==> Sin repositorios, nada que hacer");
@@ -76,7 +65,8 @@ async fn execute_pipeline(
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
-        .build()?;
+        .build()
+        .map_err(|e| NyaError::HttpClient(e.to_string()))?;
     let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stdout());
 
     let (ok, failures) = stream::iter(repositories.into_iter().map(|repository| {
@@ -94,18 +84,17 @@ async fn execute_pipeline(
     .await;
 
     if failures > 0 {
-        return Err(format!(
-            "{} de {} repositorios fallaron durante la actualización",
-            failures, total
-        )
-        .into());
+        return Err(NyaError::UpdateFailed {
+            failed: failures,
+            total,
+        });
     }
 
     println!("==> Hecho: {ok}/{total} correcto");
     Ok(())
 }
 
-pub async fn update(config: &Configuration) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn update(config: &Configuration) -> Result<(), NyaError> {
     let repositories = parser::read_repositories_from_file(&config.repositories_filepath).await?;
     execute_pipeline(repositories, config).await
 }
@@ -115,7 +104,7 @@ async fn process_repository(
     client: Client,
     config: &Configuration,
     multi: &MultiProgress,
-) -> Result<(), String> {
+) -> Result<(), NyaError> {
     let label = repo_label(&repository);
     say(multi, format!("==> {label}"));
 
@@ -135,9 +124,8 @@ async fn process_repository(
             Ok(())
         }
         Err(e) => {
-            let mensaje = format!("{label}: {e}");
-            fail(multi, format!("  ✗ {mensaje}"));
-            Err(mensaje)
+            fail(multi, format!("  ✗ {label}: {e}"));
+            Err(e)
         }
     }
 }
@@ -148,17 +136,15 @@ async fn run_repository(
     config: &Configuration,
     multi: &MultiProgress,
     pb: &ProgressBar,
-) -> Result<(), String> {
-    let downloaded = download_inrelease(repository, client.clone(), config, pb)
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<(), NyaError> {
+    let downloaded = download_inrelease(repository, client.clone(), config, pb).await?;
 
     pb.set_message("verificando firma");
     let procesado = task::spawn_blocking(move || process_inrelease(downloaded))
         .await
-        .map_err(|e| format!("Error en spawn_blocking: {e}"))?;
+        .map_err(|e| NyaError::Join(e.to_string()))?;
 
-    let (downloaded, package_info) = procesado.map_err(|e| e.to_string())?;
+    let (downloaded, package_info) = procesado?;
     say(multi, "  ✓ InRelease verificado");
 
     pb.set_length(package_info.size() as u64);
@@ -175,7 +161,6 @@ async fn run_repository(
         multi,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 async fn download_inrelease(
@@ -183,10 +168,8 @@ async fn download_inrelease(
     client: Client,
     config: &Configuration,
     pb: &ProgressBar,
-) -> Result<DownloadedInRelease, Box<dyn std::error::Error>> {
-    let suite = repository
-        .suite()
-        .ok_or("No se encontró suite en el repositorio")?;
+) -> Result<DownloadedInRelease, NyaError> {
+    let suite = repository.suite().ok_or(NyaError::MissingSuite)?;
     let urls: Vec<_> = repository.urls().cloned().collect();
     let mut causas: Vec<String> = Vec::new();
 
@@ -213,12 +196,12 @@ async fn download_inrelease(
         }
     }
 
-    Err(mirror_error("InRelease", &causas).into())
+    Err(NyaError::mirrors_failed("InRelease", &causas))
 }
 
 fn process_inrelease(
     downloaded: DownloadedInRelease,
-) -> Result<(DownloadedInRelease, PackageFileInfo), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(DownloadedInRelease, PackageFileInfo), NyaError> {
     let content = integrity::validate_signature_file(
         downloaded.inrelease_path(),
         downloaded.signature_path(),
@@ -239,10 +222,8 @@ async fn download_packages_file(
     client: Client,
     pb: &ProgressBar,
     multi: &MultiProgress,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let suite = repository
-        .suite()
-        .ok_or("No se encontró suite en el repositorio")?;
+) -> Result<(), NyaError> {
+    let suite = repository.suite().ok_or(NyaError::MissingSuite)?;
     let mut causas: Vec<String> = Vec::new();
 
     for base_url in repository.urls() {
@@ -337,5 +318,69 @@ async fn download_packages_file(
         return Ok(());
     }
 
-    Err(mirror_error("Packages", &causas).into())
+    Err(NyaError::mirrors_failed("Packages", &causas))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_with(uris: &[&str], suites: &[&str]) -> Repository {
+        let mut repo = Repository::new();
+        repo.uris = uris.iter().map(|s| s.to_string()).collect();
+        repo.suites = suites.iter().map(|s| s.to_string()).collect();
+        repo
+    }
+
+    #[test]
+    fn mirrors_failed_without_causes_reports_no_mirrors() {
+        let err = NyaError::mirrors_failed("InRelease", &[]);
+        assert!(
+            matches!(&err, NyaError::NoMirrors { what } if *what == "InRelease"),
+            "esperaba NoMirrors: {err:?}"
+        );
+    }
+
+    #[test]
+    fn mirrors_failed_ports_each_mirror_cause() {
+        let causas = vec![
+            "http://mirror1.example.com/ubuntu: HTTP 404".to_string(),
+            "http://mirror2.example.com/ubuntu: timeout".to_string(),
+        ];
+        let err = NyaError::mirrors_failed("Packages", &causas);
+
+        match &err {
+            NyaError::AllMirrorsFailed { what, causas } => {
+                assert_eq!(*what, "Packages");
+                assert_eq!(causas.len(), 2);
+                assert!(causas[0].contains("http://mirror1.example.com/ubuntu"));
+                assert!(causas[1].contains("http://mirror2.example.com/ubuntu"));
+            }
+            other => panic!("esperaba AllMirrorsFailed: {other:?}"),
+        }
+
+        let msg = err.to_string();
+        assert!(msg.contains("Packages no descargable de ningún mirror"));
+        assert!(msg.contains("    - http://mirror1.example.com/ubuntu"));
+        assert!(msg.contains("    - http://mirror2.example.com/ubuntu"));
+    }
+
+    #[test]
+    fn repo_label_includes_first_uri_and_suite() {
+        let repo = repo_with(
+            &["http://mirror1.example.com/ubuntu"],
+            &["noble", "noble-updates"],
+        );
+        assert_eq!(
+            repo_label(&repo),
+            "http://mirror1.example.com/ubuntu (noble)",
+            "el label debe usar la primera URI y la primera suite"
+        );
+    }
+
+    #[test]
+    fn repo_label_without_suite_shows_only_uri() {
+        let repo = repo_with(&["http://archive.example.com/debian"], &[]);
+        assert_eq!(repo_label(&repo), "http://archive.example.com/debian");
+    }
 }
