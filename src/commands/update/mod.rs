@@ -35,14 +35,24 @@ async fn execute_pipeline(
     repositories: Vec<Repository>,
     config: &Configuration,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let total = repositories.len();
+    if total == 0 {
+        println!("==> Sin repositorios, nada que hacer");
+        return Ok(());
+    }
+    let plural = if total == 1 {
+        "repositorio"
+    } else {
+        "repositorios"
+    };
+    println!("==> {total} {plural} en sources");
+
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .build()?;
 
-    let total = repositories.len();
-
-    let (_, failures) = stream::iter(repositories.into_iter().map(|repository| {
+    let (ok, failures) = stream::iter(repositories.into_iter().map(|repository| {
         let label = repo_label(&repository);
         let download = download_inrelease(repository, client.clone(), config);
         async move {
@@ -55,22 +65,25 @@ async fn execute_pipeline(
         let client = client.clone();
         async move {
             let result: Result<(), String> = match result {
-                Err(e) => {
-                    eprintln!("Error descargando InRelease: {}", e);
-                    Err(e)
-                }
+                Err(e) => Err(e),
                 Ok(downloaded) => {
                     match task::spawn_blocking(move || process_inrelease(downloaded)).await {
                         Err(e) => Err(format!("Error en spawn_blocking: {}", e)),
                         Ok(Err(e)) => Err(e.to_string()),
-                        Ok(Ok((downloaded, package_info))) => download_packages_file(
-                            downloaded.repository,
-                            package_info,
-                            config,
-                            client,
-                        )
-                        .await
-                        .map_err(|e| e.to_string()),
+                        Ok(Ok((downloaded, package_info))) => {
+                            println!("  ✓ InRelease verificado");
+                            let resultado = download_packages_file(
+                                downloaded.repository,
+                                package_info,
+                                config,
+                                client,
+                            )
+                            .await;
+                            if resultado.is_ok() {
+                                println!("  ✓ Packages verificado (SHA256)");
+                            }
+                            resultado.map_err(|e| e.to_string())
+                        }
                     }
                 }
             };
@@ -78,23 +91,22 @@ async fn execute_pipeline(
         }
     })
     .buffer_unordered(10)
-    .map(|(label, result)| result.map_err(|e| format!("{label}: {e}")))
+    .map(|(label, result)| {
+        result.map_err(|e| {
+            let mensaje = format!("{label}: {e}");
+            eprintln!("  ✗ {mensaje}");
+            mensaje
+        })
+    })
     .fold((0usize, 0usize), |(ok, fail), result| async move {
         match result {
             Ok(()) => (ok + 1, fail),
-            Err(e) => {
-                eprintln!("Error en el pipeline: {}", e);
-                (ok, fail + 1)
-            }
+            Err(_) => (ok, fail + 1),
         }
     })
     .await;
 
     if failures > 0 {
-        eprintln!(
-            "Actualización fallida: {} de {} repositorios con error",
-            failures, total
-        );
         return Err(format!(
             "{} de {} repositorios fallaron durante la actualización",
             failures, total
@@ -102,6 +114,7 @@ async fn execute_pipeline(
         .into());
     }
 
+    println!("==> Hecho: {ok}/{total} correcto");
     Ok(())
 }
 
@@ -137,7 +150,6 @@ async fn download_inrelease(
         .await
         {
             Ok(downloaded_filepath) => {
-                println!("Descargado InRelease: {}", downloaded_filepath);
                 return Ok(DownloadedInRelease::new(downloaded_filepath, repository));
             }
             Err(e) => causas.push(format!("{download_url}: {e}")),
@@ -258,7 +270,6 @@ async fn download_packages_file(
             continue;
         }
 
-        println!("Descargado y verificado Packages: {}", downloaded_filepath);
         return Ok(());
     }
 
