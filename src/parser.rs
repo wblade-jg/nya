@@ -107,10 +107,60 @@ fn parse_file(input: &str) -> IResult<&str, Vec<Repository>> {
     .parse(input)
 }
 
+pub(crate) fn parse_content(content: &str) -> io::Result<Vec<Repository>> {
+    let (rest, repositories) = parse_file(content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {}", e)))?;
+
+    let mut rest = rest;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        match skip_comment(rest) {
+            Ok((next, _)) => rest = next,
+            Err(_) => break,
+        }
+    }
+
+    if !rest.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Contenido no consumido tras el último bloque: {:?}", rest),
+        ));
+    }
+
+    Ok(repositories)
+}
+
 pub(crate) async fn read_repositories_from_file(filepath: &str) -> io::Result<Vec<Repository>> {
     let file_content = fs::read_to_string(filepath).await?;
+    parse_content(&file_content)
+}
 
-    let (_, repositories) = parse_file(&file_content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Parse error: {}", e)))?;
-    Ok(repositories)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_line_after_last_block_returns_err() {
+        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\n\nmalformed garbage line without colon";
+        let result = parse_content(content);
+        assert!(
+            result.is_err(),
+            "una línea malformada tras el último bloque debe producir Err"
+        );
+    }
+
+    #[test]
+    fn trailing_comment_without_newline_returns_ok() {
+        let content = "URIs: http://example.com\nSuites: stable\nComponents: main\n\n# comentario final sin newline";
+        let result = parse_content(content);
+        assert!(
+            result.is_ok(),
+            "un fichero que termina en comentario sin newline final debe parsear OK"
+        );
+        let repos = result.unwrap();
+        assert_eq!(repos.len(), 1);
+    }
 }
