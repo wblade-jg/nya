@@ -65,7 +65,7 @@ Variables de entorno: `CACHE_DIR` (default `/etc/nya`), `REPOSITORIES_FILE`
 | `src/configuration.rs` | config por env vars; mapeo de arquitectura del host |
 | `src/fixtures/` | InRelease y clave pública de prueba |
 | `docs/` | assets de documentación (logo) |
-| `sources` | archivo de repositorios (ejemplo: Docker Ubuntu noble) |
+| `sources` | archivo de repositorios (Kali, GitHub CLI, ChatGPT, Docker) |
 | `.github/workflows/ci.yml` | CI: fmt, clippy, test |
 | `.opencode/skills/repo-workflow/` | skill de flujo git/PR |
 
@@ -105,8 +105,12 @@ Variables de entorno: `CACHE_DIR` (default `/etc/nya`), `REPOSITORIES_FILE`
 - Multi-suite/multi-componente (hoy solo usa el primero: `suites.first()`).
 - Arquitecturas más allá de amd64/arm64 (hoy `NyaError::UnsupportedArch`).
 - `Release` firmado (no cleartext) como fallback; validación de confianza de
-  la clave (hoy TOFU: se verifica contra cualquier clave en `Signed-By`;
-  falta fijado de fingerprint).
+  la clave (hoy TOFU: se verifica la clave indicada en `Signed-By` sin fijar
+  fingerprint).
+- Keyrings con varias claves: `integrity::validate_signature_file` solo lee
+  la primera (`SignedPublicKey::from_reader_single`); ante rotación de
+  claves falla con `SignatureMismatch`. Caso real: GitHub CLI (`sources`),
+  `nya update` → 3/4 correctos.
 
 ## Reglas para agentes
 

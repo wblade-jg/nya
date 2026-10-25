@@ -1,4 +1,25 @@
 Types: deb
+URIs: http://http.kali.org/kali
+Suites: kali-rolling
+Components: main contrib non-free non-free-firmware
+Architectures: amd64
+Signed-By: /usr/share/keyrings/kali-archive-keyring.gpg
+
+Types: deb
+URIs: https://cli.github.com/packages
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+
+Types: deb
+URIs: https://persistent.oaistatic.com/codex-app-prod/linux/deb
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /usr/share/keyrings/chatgpt-archive-keyring.gpg
+
+Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: noble
 Components: stable
