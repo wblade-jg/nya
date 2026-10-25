@@ -8,9 +8,11 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
 };
 use tokio::fs;
+use url::Url;
 
 use crate::error::NyaError;
 use crate::types::Repository;
+use std::path::Path;
 
 fn format_snippet(snippet: &str) -> String {
     if snippet.is_empty() {
@@ -20,16 +22,25 @@ fn format_snippet(snippet: &str) -> String {
     }
 }
 
+fn format_reason(reason: &Option<&'static str>) -> String {
+    match reason {
+        Some(field) => format!(", falta el campo {field}"),
+        None => String::new(),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error(
-        "error de parseo en línea {line}, columna {column}{}",
+        "error de parseo en línea {line}, columna {column}{}{}",
+        format_reason(.reason),
         format_snippet(.snippet)
     )]
     Invalid {
         line: usize,
         column: usize,
         snippet: String,
+        reason: Option<&'static str>,
     },
     #[error(
         "contenido no consumido tras el último bloque en línea {line}, columna {column}: {rest:?}"
@@ -92,6 +103,13 @@ fn skip_preamble(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
+fn is_supported_uri(uri: &str) -> bool {
+    match Url::parse(uri) {
+        Ok(parsed) => matches!(parsed.scheme(), "http" | "https"),
+        Err(_) => false,
+    }
+}
+
 fn parse_key_value_line(input: &str) -> IResult<&str, (String, String)> {
     terminated(
         map(
@@ -105,8 +123,11 @@ fn parse_key_value_line(input: &str) -> IResult<&str, (String, String)> {
     .parse(input)
 }
 
-fn parse_block(input: &str) -> IResult<&str, Repository> {
+type BlockEntry<'a> = Result<Repository, (&'static str, &'a str)>;
+
+fn parse_block(input: &str) -> IResult<&str, BlockEntry<'_>> {
     let (mut input, _) = skip_preamble(input)?;
+    let block_start = input;
     let mut uris = Vec::new();
     let mut suites = Vec::new();
     let mut components = Vec::new();
@@ -115,7 +136,15 @@ fn parse_block(input: &str) -> IResult<&str, Repository> {
     while let Ok((next_input, (key, value))) = parse_key_value_line(input) {
         match key.as_str() {
             "URIs" => {
-                uris.extend(value.split_whitespace().map(String::from));
+                for uri in value.split_whitespace() {
+                    if !is_supported_uri(uri) {
+                        return Err(nom::Err::Error(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::Verify,
+                        )));
+                    }
+                    uris.push(uri.to_string());
+                }
             }
             "Suites" => {
                 suites.extend(value.split_whitespace().map(String::from));
@@ -133,17 +162,24 @@ fn parse_block(input: &str) -> IResult<&str, Repository> {
         input = next_input;
     }
 
-    let repo = Repository::new(uris, suites, components, signed_by).map_err(|_| {
-        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
-    })?;
-    Ok((input, repo))
+    let parsed_any_key =
+        !uris.is_empty() || !suites.is_empty() || !components.is_empty() || !signed_by.is_empty();
+
+    match Repository::new(uris, suites, components, signed_by) {
+        Ok(repo) => Ok((input, Ok(repo))),
+        Err(_) if !parsed_any_key => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        ))),
+        Err(field) => Ok((input, Err((field, block_start)))),
+    }
 }
 
 fn block_separator(input: &str) -> IResult<&str, ()> {
     value((), many1(blank_line)).parse(input)
 }
 
-fn parse_file(input: &str) -> IResult<&str, Vec<Repository>> {
+fn parse_file(input: &str) -> IResult<&str, Vec<BlockEntry<'_>>> {
     delimited(
         multispace0,
         separated_list1(block_separator, parse_block),
@@ -166,13 +202,14 @@ fn line_snippet(content: &str, rest: &str) -> String {
     text.chars().take(60).collect()
 }
 
-fn parse_error(content: &str, rest: &str) -> ParseError {
+fn parse_error(content: &str, rest: &str, reason: Option<&'static str>) -> ParseError {
     let (line, column) = error_position(content, rest.trim_start());
     let snippet = line_snippet(content, rest.trim_start());
     ParseError::Invalid {
         line,
         column,
         snippet,
+        reason,
     }
 }
 
@@ -185,13 +222,18 @@ pub(crate) fn parse_content(content: &str) -> Result<Vec<Repository>, ParseError
         return Ok(Vec::new());
     }
 
-    let (rest, repositories) = parse_file(content).map_err(|e| {
+    let (rest, blocks) = parse_file(content).map_err(|e| {
         let rest = match &e {
             nom::Err::Error(err) | nom::Err::Failure(err) => err.input,
             nom::Err::Incomplete(_) => "",
         };
-        parse_error(content, rest)
+        parse_error(content, rest, None)
     })?;
+
+    let repositories = blocks
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|(field, at)| parse_error(content, at, Some(field)))?;
 
     let mut rest = rest;
     loop {
@@ -218,13 +260,14 @@ pub(crate) fn parse_content(content: &str) -> Result<Vec<Repository>, ParseError
 }
 
 pub(crate) async fn read_repositories_from_file(
-    filepath: &str,
+    filepath: impl AsRef<Path>,
 ) -> Result<Vec<Repository>, NyaError> {
+    let filepath = filepath.as_ref();
     let file_content = fs::read_to_string(filepath)
         .await
         .map_err(|source| NyaError::io("leer", filepath, source))?;
     parse_content(&file_content).map_err(|source| NyaError::Parse {
-        path: filepath.to_string(),
+        path: filepath.display().to_string(),
         source,
     })
 }
@@ -275,15 +318,55 @@ mod tests {
     }
 
     #[test]
-    fn parse_error_reports_line_and_column() {
+    fn missing_field_error_reports_block_start() {
         let content = "URIs: http://example.com\nSuites: stable\n\nmalformed garbage";
         let err = parse_content(content).unwrap_err();
         match &err {
-            ParseError::Invalid { line, column, .. } => {
-                assert_eq!((*line, *column), (4, 1), "posición del error: {err:?}");
+            ParseError::Invalid {
+                line,
+                column,
+                reason,
+                ..
+            } => {
+                assert_eq!((*line, *column), (1, 1), "posición del error: {err:?}");
+                assert_eq!(
+                    *reason,
+                    Some("Components"),
+                    "el motivo debe nombrar el campo que falta: {err:?}"
+                );
             }
             other => panic!("esperaba ParseError::Invalid: {other}"),
         }
+    }
+
+    #[test]
+    fn missing_field_error_names_the_field() {
+        let content = "URIs: http://a.example.com\nSuites: stable\nComponents: main\nSigned-By: /tmp/k.gpg\n\nURIs: http://b.example.com\nSuites: stable\n";
+        let err = parse_content(content).unwrap_err();
+        match &err {
+            ParseError::Invalid {
+                line,
+                column,
+                reason,
+                ..
+            } => {
+                assert_eq!(
+                    *reason,
+                    Some("Components"),
+                    "el error debe nombrar el campo: {err:?}"
+                );
+                assert_eq!(
+                    (*line, *column),
+                    (6, 1),
+                    "apunta al inicio del bloque defectuoso: {err:?}"
+                );
+            }
+            other => panic!("esperaba ParseError::Invalid: {other}"),
+        }
+        assert!(
+            err.to_string().contains("falta el campo Components"),
+            "el mensaje debe incluir el campo: {err}"
+        );
     }
 
     #[test]
@@ -336,6 +419,46 @@ mod tests {
             matches!(&err, ParseError::Invalid { .. }),
             "un bloque sin Signed-By debe fallar en is_valid: {err:?}"
         );
+    }
+
+    #[test]
+    fn non_http_scheme_is_rejected() {
+        for uri in [
+            "file:///etc/apt",
+            "ftp://example.com/repo",
+            "mirror1.example.com",
+        ] {
+            let content =
+                format!("URIs: {uri}\nSuites: stable\nComponents: main\nSigned-By: /tmp/k.gpg\n");
+            let err = parse_content(&content).unwrap_err();
+            match &err {
+                ParseError::Invalid {
+                    line,
+                    column,
+                    reason,
+                    ..
+                } => {
+                    assert_eq!(
+                        (*line, *column),
+                        (1, 1),
+                        "la posición debe apuntar a la línea del URIs: {err:?}"
+                    );
+                    assert_eq!(
+                        *reason, None,
+                        "un fallo de sintaxis nom no lleva motivo de campo: {err:?}"
+                    );
+                }
+                other => panic!("esperaba ParseError::Invalid: {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn https_uri_is_accepted() {
+        let content = "URIs: https://example.com/ubuntu\nSuites: stable\nComponents: main\nSigned-By: /tmp/k.gpg\n";
+        let repos = parse_content(content).unwrap();
+        assert_eq!(repos.len(), 1, "https debe aceptarse igual que http");
+        assert_eq!(repos[0].uris().to_vec(), vec!["https://example.com/ubuntu"]);
     }
 
     #[test]

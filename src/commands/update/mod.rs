@@ -1,11 +1,13 @@
-use crate::configuration::{Configuration, architecture};
+use crate::configuration::{
+    Configuration, architecture, resolve_cache_dir, resolve_repositories_file,
+};
 use crate::error::NyaError;
-use crate::types::{DownloadedInRelease, PackageFileInfo, Repository};
+use crate::types::{PackageFileInfo, Repository};
 use crate::{download, integrity, package_info, parser, url};
 use futures::stream::{self, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reqwest::Client;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::task;
 
@@ -43,6 +45,13 @@ fn packages_style() -> ProgressStyle {
     .progress_chars("█░")
 }
 
+async fn hash_file(path: &Path) -> Result<String, NyaError> {
+    let path = path.to_path_buf();
+    task::spawn_blocking(move || integrity::calculate_file_hash(path))
+        .await
+        .map_err(|e| NyaError::Join(e.to_string()))?
+}
+
 async fn execute_pipeline(
     repositories: Vec<Repository>,
     config: &Configuration,
@@ -59,11 +68,13 @@ async fn execute_pipeline(
     };
     println!("==> {total} {plural} en sources");
 
+    resolve_cache_dir(&config.download_path)?;
+
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .build()
-        .map_err(|source| NyaError::Http { source })?;
+        .map_err(NyaError::HttpClient)?;
     let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stdout());
 
     let (ok, failures) = stream::iter(repositories.into_iter().map(|repository| {
@@ -92,7 +103,8 @@ async fn execute_pipeline(
 }
 
 pub async fn update(config: &Configuration) -> Result<(), NyaError> {
-    let repositories = parser::read_repositories_from_file(&config.repositories_filepath).await?;
+    let repositories_filepath = resolve_repositories_file(&config.repositories_filepath)?;
+    let repositories = parser::read_repositories_from_file(&repositories_filepath).await?;
     execute_pipeline(repositories, config).await
 }
 
@@ -134,14 +146,17 @@ async fn run_repository(
     multi: &MultiProgress,
     pb: &ProgressBar,
 ) -> Result<(), NyaError> {
-    let downloaded = download_inrelease(repository, client.clone(), config, pb).await?;
+    let inrelease_path = download_inrelease(&repository, client.clone(), config, pb).await?;
 
     pb.set_message("verificando firma");
-    let processed = task::spawn_blocking(move || process_inrelease(downloaded))
-        .await
-        .map_err(|e| NyaError::Join(e.to_string()))?;
+    let key_path = repository.signed_by().to_string();
+    let target_path = repository.target_package_path(architecture()?);
+    let processed =
+        task::spawn_blocking(move || process_inrelease(&inrelease_path, &key_path, &target_path))
+            .await
+            .map_err(|e| NyaError::Join(e.to_string()))?;
 
-    let (downloaded, package_info) = processed?;
+    let package_info = processed?;
     say(multi, "  ✓ InRelease verificado");
 
     pb.set_length(package_info.size() as u64);
@@ -149,28 +164,19 @@ async fn run_repository(
     pb.set_message("Packages");
     pb.set_style(packages_style());
 
-    download_packages_file(
-        downloaded.repository,
-        package_info,
-        config,
-        client,
-        pb,
-        multi,
-    )
-    .await
+    download_packages_file(&repository, package_info, config, client, pb, multi).await
 }
 
 async fn download_inrelease(
-    repository: Repository,
+    repository: &Repository,
     client: Client,
     config: &Configuration,
     pb: &ProgressBar,
-) -> Result<DownloadedInRelease, NyaError> {
+) -> Result<PathBuf, NyaError> {
     let suite = repository.suite();
-    let urls: Vec<_> = repository.urls().cloned().collect();
     let mut causes: Vec<String> = Vec::new();
 
-    for url in urls {
+    for url in repository.urls() {
         let download_url = format!("{}/dists/{}/InRelease", url, suite);
         let Some(filename) = url::format_url("_", &download_url) else {
             causes.push(format!("{download_url}: URL no válida"));
@@ -186,9 +192,7 @@ async fn download_inrelease(
         )
         .await
         {
-            Ok(downloaded_filepath) => {
-                return Ok(DownloadedInRelease::new(downloaded_filepath, repository));
-            }
+            Ok(downloaded_filepath) => return Ok(downloaded_filepath),
             Err(e) => causes.push(format!("{download_url}: {e}")),
         }
     }
@@ -197,23 +201,17 @@ async fn download_inrelease(
 }
 
 fn process_inrelease(
-    downloaded: DownloadedInRelease,
-) -> Result<(DownloadedInRelease, PackageFileInfo), NyaError> {
-    let content = integrity::validate_signature_file(
-        downloaded.inrelease_path(),
-        downloaded.signature_path(),
-    )?;
-
-    let package_info = package_info::get_package_file_info(
-        &content,
-        &downloaded.target_package_path(architecture()?),
-    )?;
-
-    Ok((downloaded, package_info))
+    inrelease_path: &Path,
+    key_path: &str,
+    target_path: &str,
+) -> Result<PackageFileInfo, NyaError> {
+    let content = integrity::validate_signature_file(inrelease_path, key_path)?;
+    package_info::check_valid_until(&content, inrelease_path)?;
+    package_info::get_package_file_info(&content, target_path)
 }
 
 async fn download_packages_file(
-    repository: Repository,
+    repository: &Repository,
     package_info: PackageFileInfo,
     config: &Configuration,
     client: Client,
@@ -229,38 +227,26 @@ async fn download_packages_file(
             causes.push(format!("{download_url}: URL no válida"));
             continue;
         };
-        let file_path = format!("{}/{}", config.download_path, filename);
+        let file_path = config.download_path.join(&filename);
 
-        if Path::new(&file_path).exists() {
-            let hash_result = task::spawn_blocking({
-                let path = file_path.clone();
-                move || integrity::calculate_file_hash(&path)
-            })
-            .await;
-
-            match hash_result {
-                Ok(Ok(existing_hash)) if existing_hash == package_info.hash() => {
+        if file_path.exists() {
+            match hash_file(&file_path).await {
+                Ok(existing_hash) if existing_hash == package_info.hash() => {
                     say(
                         multi,
                         format!(
-                            "El fichero Packages ya existe con el hash correcto, se omite la descarga: {file_path}"
+                            "El fichero Packages ya existe con el hash correcto, se omite la descarga: {}",
+                            file_path.display()
                         ),
                     );
                     pb.set_position(package_info.size() as u64);
                     return Ok(());
                 }
-                Ok(Ok(_)) => {
-                    say(
-                        multi,
-                        "El fichero Packages existe pero el hash no coincide, volviendo a descargar...",
-                    );
-                }
-                Ok(Err(e)) => {
-                    causes.push(format!("{download_url}: no se pudo calcular el hash: {e}"));
-                }
-                Err(e) => {
-                    causes.push(format!("{download_url}: error en spawn_blocking: {e}"));
-                }
+                Ok(_) => say(
+                    multi,
+                    "El fichero Packages existe pero el hash no coincide, volviendo a descargar...",
+                ),
+                Err(e) => causes.push(format!("{download_url}: no se pudo calcular el hash: {e}")),
             }
         }
 
@@ -280,20 +266,10 @@ async fn download_packages_file(
             }
         };
 
-        let hash_result = task::spawn_blocking({
-            let path = downloaded_filepath.clone();
-            move || integrity::calculate_file_hash(&path)
-        })
-        .await;
-
-        let downloaded_hash = match hash_result {
-            Ok(Ok(hash)) => hash,
-            Ok(Err(e)) => {
-                causes.push(format!("{download_url}: no se pudo calcular el hash: {e}"));
-                continue;
-            }
+        let downloaded_hash = match hash_file(&downloaded_filepath).await {
+            Ok(hash) => hash,
             Err(e) => {
-                causes.push(format!("{download_url}: error en spawn_blocking: {e}"));
+                causes.push(format!("{download_url}: no se pudo calcular el hash: {e}"));
                 continue;
             }
         };
@@ -306,7 +282,10 @@ async fn download_packages_file(
             if let Err(e) = std::fs::remove_file(&downloaded_filepath) {
                 fail(
                     multi,
-                    format!("No se pudo eliminar el fichero corrupto {downloaded_filepath}: {e}"),
+                    format!(
+                        "No se pudo eliminar el fichero corrupto {}: {e}",
+                        downloaded_filepath.display()
+                    ),
                 );
             }
             continue;

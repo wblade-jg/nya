@@ -2,10 +2,12 @@ use pgp::composed::{CleartextSignedMessage, Deserializable, SignedPublicKey};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 
 use crate::error::NyaError;
 
-pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, NyaError> {
+pub(crate) fn calculate_file_hash(file_path: impl AsRef<Path>) -> Result<String, NyaError> {
+    let file_path = file_path.as_ref();
     let mut file =
         File::open(file_path).map_err(|source| NyaError::io("abrir", file_path, source))?;
     let mut hasher = Sha256::new();
@@ -33,7 +35,7 @@ pub(crate) fn calculate_file_hash(file_path: &str) -> Result<String, NyaError> {
 pub(crate) fn verify_inrelease_signature(
     msg: &CleartextSignedMessage,
     key: &SignedPublicKey,
-    key_path: &str,
+    key_path: impl AsRef<Path>,
 ) -> Result<(), NyaError> {
     if msg.verify(key).is_ok() {
         return Ok(());
@@ -48,20 +50,22 @@ pub(crate) fn verify_inrelease_signature(
         Ok(())
     } else {
         Err(NyaError::SignatureMismatch {
-            key: key_path.to_string(),
+            key: key_path.as_ref().display().to_string(),
         })
     }
 }
 
 pub(crate) fn validate_signature_file(
-    signed_path: &str,
-    key_path: &str,
+    signed_path: impl AsRef<Path>,
+    key_path: impl AsRef<Path>,
 ) -> Result<String, NyaError> {
+    let signed_path = signed_path.as_ref();
+    let key_path = key_path.as_ref();
     let key_file =
         File::open(key_path).map_err(|source| NyaError::io("abrir", key_path, source))?;
     let (public_key, _) =
         SignedPublicKey::from_reader_single(key_file).map_err(|e| NyaError::InvalidKey {
-            path: key_path.to_string(),
+            path: key_path.display().to_string(),
             reason: e.to_string(),
         })?;
 
@@ -69,7 +73,7 @@ pub(crate) fn validate_signature_file(
         .map_err(|source| NyaError::io("leer", signed_path, source))?;
     let (message, _) = CleartextSignedMessage::from_string(&signed_file).map_err(|e| {
         NyaError::InvalidCleartext {
-            path: signed_path.to_string(),
+            path: signed_path.display().to_string(),
             reason: e.to_string(),
         }
     })?;

@@ -1,5 +1,33 @@
 use crate::error::NyaError;
 use crate::types::{HashType, PackageFileInfo};
+use std::path::Path;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc2822;
+
+pub(crate) fn check_valid_until(content: &str, path: impl AsRef<Path>) -> Result<(), NyaError> {
+    let path_display = path.as_ref().display().to_string();
+    let Some(value) = content
+        .lines()
+        .find_map(|line| line.strip_prefix("Valid-Until:").map(str::trim))
+    else {
+        return Ok(());
+    };
+
+    let valid_until =
+        OffsetDateTime::parse(value, &Rfc2822).map_err(|source| NyaError::InvalidValidUntil {
+            path: path_display.clone(),
+            reason: source.to_string(),
+        })?;
+
+    if valid_until < OffsetDateTime::now_utc() {
+        return Err(NyaError::ExpiredRelease {
+            path: path_display,
+            valid_until: value.to_string(),
+        });
+    }
+
+    Ok(())
+}
 
 pub(crate) fn get_package_file_info(
     content: &str,
@@ -44,6 +72,7 @@ pub(crate) fn get_package_file_info(
                 path: target_path.to_string(),
             });
         }
+        let hash = hash.to_ascii_lowercase();
 
         let size = size_str
             .parse::<usize>()
@@ -212,11 +241,9 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_hash_is_accepted() {
-        // Documenta el comportamiento actual: el parser acepta hash en
-        // mayúsculas, pero calculate_file_hash produce minúsculas; la
-        // comparación en update daría falso "hash no coincide" en cada
-        // ejecución si un InRelease publicara hashes en mayúsculas.
+    fn uppercase_hash_is_normalized_to_lowercase() {
+        // calculate_file_hash produce minúsculas; un InRelease con hashes en
+        // mayúsculas debe normalizarse para que la comparación no falle.
         let inrelease_content = r#"
           Origin: Test
           Suite: stable
@@ -224,10 +251,58 @@ mod tests {
           SHA256:
            A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2 12345 main/binary-amd64/Packages
           "#;
-        let result = get_package_file_info(inrelease_content, "main/binary-amd64/Packages");
+        let target_path = "main/binary-amd64/Packages";
+        let package_info = get_package_file_info(inrelease_content, target_path).unwrap();
+        assert_eq!(
+            package_info.hash(),
+            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+        );
+    }
+
+    #[test]
+    fn missing_valid_until_is_accepted() {
+        let content = "Origin: Test\nSuite: stable\n";
+        let result = check_valid_until(content, "InRelease");
         assert!(
             result.is_ok(),
-            "un hash en mayúsculas debe aceptarse (comportamiento actual): {result:?}"
+            "sin Valid-Until debe permitirse: {result:?}"
         );
+    }
+
+    #[test]
+    fn future_valid_until_is_accepted() {
+        let content = "Valid-Until: Thu, 31 Dec 2099 23:59:00 +0000\n";
+        let result = check_valid_until(content, "InRelease");
+        assert!(result.is_ok(), "índice vigente debe aceptarse: {result:?}");
+    }
+
+    #[test]
+    fn expired_valid_until_errors() {
+        let content = "Valid-Until: Wed, 01 Jan 2020 00:00:00 +0000\n";
+        let err = check_valid_until(content, "InRelease").unwrap_err();
+        assert!(
+            matches!(&err, NyaError::ExpiredRelease { path, valid_until }
+                if path == "InRelease" && valid_until.contains("2020")),
+            "índice caducado debe producir ExpiredRelease: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_valid_until_errors() {
+        let content = "Valid-Until: ayer por la tarde\n";
+        let err = check_valid_until(content, "InRelease").unwrap_err();
+        assert!(
+            matches!(&err, NyaError::InvalidValidUntil { path, .. } if path == "InRelease"),
+            "fecha inválida debe producir InvalidValidUntil: {err:?}"
+        );
+    }
+
+    #[test]
+    fn indented_valid_until_is_ignored() {
+        // Solo cuenta el campo top-level; una línea indentada (dentro de una
+        // sección) no debe interpretarse como Valid-Until.
+        let content = "SHA256:\n Valid-Until: Wed, 01 Jan 2020 00:00:00 +0000\n";
+        let result = check_valid_until(content, "InRelease");
+        assert!(result.is_ok(), "línea indentada debe ignorarse: {result:?}");
     }
 }

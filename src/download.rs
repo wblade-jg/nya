@@ -2,17 +2,31 @@ use crate::error::NyaError;
 use futures::stream::StreamExt;
 use indicatif::ProgressBar;
 use reqwest::Client;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temp_path_for(filepath: &Path) -> PathBuf {
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut temp = filepath.as_os_str().to_owned();
+    temp.push(format!(".{}.{}.part", std::process::id(), n));
+    PathBuf::from(temp)
+}
 
 pub async fn download_file(
     url: &str,
     filename: &str,
-    download_path: &str,
+    download_path: &Path,
     client: Client,
     pb: &ProgressBar,
-) -> Result<String, NyaError> {
-    let http = |source: reqwest::Error| NyaError::Http { source };
+) -> Result<PathBuf, NyaError> {
+    let http = |source: reqwest::Error| NyaError::Http {
+        url: url.to_string(),
+        source,
+    };
 
     let response = client
         .get(url)
@@ -29,8 +43,8 @@ pub async fn download_file(
 
     let mut stream = response.bytes_stream();
 
-    let filepath = format!("{}/{}", download_path, filename);
-    let temp_path = format!("{filepath}.part");
+    let filepath = download_path.join(filename);
+    let temp_path = temp_path_for(&filepath);
 
     let write_result = async {
         let file = File::create(&temp_path)
@@ -64,5 +78,24 @@ pub async fn download_file(
             let _ = tokio::fs::remove_file(&temp_path).await;
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_path_for_is_unique_per_call() {
+        let first = temp_path_for(Path::new("/etc/nya/host_dists_noble_InRelease"));
+        let second = temp_path_for(Path::new("/etc/nya/host_dists_noble_InRelease"));
+
+        assert_ne!(first, second, "cada descarga necesita su propio .part");
+        let first = first.to_string_lossy();
+        assert!(
+            first.contains(&std::process::id().to_string()),
+            "el temporal debe llevar el pid: {first}"
+        );
+        assert!(first.ends_with(".part"), "sufijo .part: {first}");
     }
 }
