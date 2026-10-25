@@ -32,7 +32,6 @@ impl HashType {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct PackageFileInfo {
     hash: String,
@@ -40,7 +39,6 @@ pub(crate) struct PackageFileInfo {
     path: String,
 }
 
-#[allow(dead_code)]
 impl PackageFileInfo {
     pub(crate) fn new(hash: String, size: usize, path: String) -> Self {
         PackageFileInfo { hash, size, path }
@@ -56,37 +54,6 @@ impl PackageFileInfo {
 
     pub(crate) fn path(&self) -> &str {
         &self.path
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DownloadedInRelease {
-    inrelease_path: String,
-    pub repository: Repository,
-}
-
-impl DownloadedInRelease {
-    pub(crate) fn new(inrelease_path: String, repository: Repository) -> Self {
-        DownloadedInRelease {
-            inrelease_path,
-            repository,
-        }
-    }
-
-    pub(crate) fn inrelease_path(&self) -> &str {
-        &self.inrelease_path
-    }
-
-    pub(crate) fn signature_path(&self) -> &str {
-        self.repository.signed_by()
-    }
-
-    pub(crate) fn target_package_path(&self, architecture: &str) -> String {
-        format!(
-            "{}/binary-{}/Packages",
-            self.repository.component(),
-            architecture
-        )
     }
 }
 
@@ -106,9 +73,8 @@ mod tests {
 
     #[test]
     fn target_package_path_joins_component_and_architecture() {
-        let downloaded = DownloadedInRelease::new("/tmp/InRelease".to_string(), repo_ok());
         assert_eq!(
-            downloaded.target_package_path("amd64"),
+            repo_ok().target_package_path("amd64"),
             "main/binary-amd64/Packages"
         );
     }

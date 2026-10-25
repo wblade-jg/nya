@@ -29,9 +29,9 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Configuration::from_env()?;
-
     let cli = Cli::parse();
+
+    let config = Configuration::from_env();
 
     match cli.command {
         Commands::Update => {

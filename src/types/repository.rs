@@ -44,7 +44,7 @@ impl Repository {
         &self.signed_by
     }
 
-    pub fn urls(&self) -> impl Iterator<Item = &String> {
+    pub(crate) fn urls(&self) -> impl Iterator<Item = &String> {
         self.uris.iter()
     }
 
@@ -68,5 +68,9 @@ impl Repository {
             .first()
             .expect("invariante: new() exige suites no vacío")
             .as_str()
+    }
+
+    pub(crate) fn target_package_path(&self, architecture: &str) -> String {
+        format!("{}/binary-{}/Packages", self.component(), architecture)
     }
 }

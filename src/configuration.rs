@@ -1,25 +1,28 @@
 use crate::error::NyaError;
-use std::{env, path::Path};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 const DEFAULT_CACHE_DIR: &str = "/etc/nya";
 const DEFAULT_REPOSITORIES_FILE: &str = "sources";
 
 pub struct Configuration {
-    pub repositories_filepath: String,
-    pub download_path: String,
+    pub repositories_filepath: PathBuf,
+    pub download_path: PathBuf,
 }
 
 impl Configuration {
-    pub fn from_env() -> Result<Self, NyaError> {
-        let repositories_filepath = resolve_repositories_file(&try_read_env_var(
+    pub fn from_env() -> Self {
+        let repositories_filepath = PathBuf::from(try_read_env_var(
             "REPOSITORIES_FILE",
             DEFAULT_REPOSITORIES_FILE,
-        ))?;
-        let download_path = resolve_cache_dir(&try_read_env_var("CACHE_DIR", DEFAULT_CACHE_DIR))?;
-        Ok(Configuration {
+        ));
+        let download_path = PathBuf::from(try_read_env_var("CACHE_DIR", DEFAULT_CACHE_DIR));
+        Configuration {
             repositories_filepath,
             download_path,
-        })
+        }
     }
 }
 
@@ -27,23 +30,22 @@ fn try_read_env_var(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-pub(crate) fn resolve_cache_dir(value: &str) -> Result<String, NyaError> {
-    let base_dir = Path::new(value);
-
-    if !base_dir.is_dir() {
-        std::fs::create_dir_all(base_dir)
-            .map_err(|source| NyaError::io("crear el directorio de caché", value, source))?;
+pub(crate) fn resolve_cache_dir(path: &Path) -> Result<(), NyaError> {
+    if !path.is_dir() {
+        std::fs::create_dir_all(path)
+            .map_err(|source| NyaError::io("crear el directorio de caché", path, source))?;
     }
-    Ok(value.to_string())
+    Ok(())
 }
 
-pub(crate) fn resolve_repositories_file(value: &str) -> Result<String, NyaError> {
-    if !Path::new(value).exists() {
+pub(crate) fn resolve_repositories_file(value: impl AsRef<Path>) -> Result<PathBuf, NyaError> {
+    let path = value.as_ref();
+    if !path.exists() {
         return Err(NyaError::MissingRepositoriesFile {
-            path: value.to_string(),
+            path: path.display().to_string(),
         });
     }
-    Ok(value.to_string())
+    Ok(path.to_path_buf())
 }
 
 pub(crate) fn to_debian_arch(arch: &str) -> Result<&'static str, NyaError> {
@@ -89,7 +91,7 @@ mod tests {
     #[test]
     fn resolve_repositories_file_existing_path_ok() {
         let result = resolve_repositories_file("Cargo.toml");
-        assert_eq!(result.unwrap(), "Cargo.toml");
+        assert_eq!(result.unwrap(), PathBuf::from("Cargo.toml"));
     }
 
     #[test]
@@ -97,7 +99,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nya-cache-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let result = resolve_cache_dir(dir.to_str().unwrap());
+        let result = resolve_cache_dir(&dir);
         assert!(
             result.is_ok(),
             "un directorio nuevo debe crearse: {result:?}"
@@ -111,7 +113,7 @@ mod tests {
         let file = std::env::temp_dir().join(format!("nya-cache-file-{}", std::process::id()));
         std::fs::write(&file, "x").unwrap();
 
-        let err = resolve_cache_dir(file.to_str().unwrap()).unwrap_err();
+        let err = resolve_cache_dir(&file).unwrap_err();
         std::fs::remove_file(&file).ok();
 
         assert!(

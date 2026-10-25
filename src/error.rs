@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 
 fn format_causes(causes: &[String]) -> String {
     causes
@@ -40,17 +41,27 @@ pub enum NyaError {
     #[error("No se pudo parsear el cleartext de {path}: {reason}")]
     InvalidCleartext { path: String, reason: String },
 
-    #[error("{source}")]
+    #[error("{url}: {source}")]
     Http {
+        url: String,
         #[source]
         source: reqwest::Error,
     },
+
+    #[error("No se pudo crear el cliente HTTP: {0}")]
+    HttpClient(#[source] reqwest::Error),
 
     #[error("No se encontro la seccion {section} en el InRelease")]
     MissingSection { section: &'static str },
 
     #[error("No se encontró {path} en la sección {section}")]
     PackageEntryNotFound { section: &'static str, path: String },
+
+    #[error("Valid-Until inválido en {path}: {reason}")]
+    InvalidValidUntil { path: String, reason: String },
+
+    #[error("El índice de {path} caducó el {valid_until}")]
+    ExpiredRelease { path: String, valid_until: String },
 
     #[error("Hash invalido (longitud o caracteres) para {path}")]
     InvalidPackageHash { path: String },
@@ -75,10 +86,10 @@ pub enum NyaError {
 }
 
 impl NyaError {
-    pub(crate) fn io(op: &'static str, path: &str, source: io::Error) -> Self {
+    pub(crate) fn io(op: &'static str, path: impl AsRef<Path>, source: io::Error) -> Self {
         NyaError::Io {
             op,
-            path: path.to_string(),
+            path: path.as_ref().display().to_string(),
             source,
         }
     }
